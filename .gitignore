@@ -6,3 +6,5 @@ __pycache__/
 Docs/
 certs/
 tools/
+.devcontainer/
+app_streamlit_old.txt
