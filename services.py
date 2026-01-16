@@ -1,113 +1,115 @@
 from __future__ import annotations
-
-import random
-import time
-from typing import Tuple
-
-import db
+from typing import Dict
+import db_supabase as db
 
 
-def _simulate(system: str, request_id: str, seconds: float = 2.0) -> Tuple[bool, str]:
-    db.insert_event(request_id, "INFO", f"Iniciando: {system}")
-    for i in range(4):
-        time.sleep(seconds / 4)
-        db.insert_event(request_id, "DEBUG", f"{system}: progresso {int((i+1)*25)}%")
-    if random.random() < 0.05:
-        return False, "Falha simulada (protótipo)."
-    return True, "OK"
+def _normalize_status(s: str) -> str:
+    return (s or "").strip().lower()
+
+def _is_apto(status_brasil_risk: str) -> bool:
+    s = _normalize_status(status_brasil_risk)
+    return s in {"apto", "done", "concluido", "concluído", "ok"}
+
+def _recompute_overall(r: Dict) -> str:
+    br = r.get("status_brasil_risk", "")
+    if _normalize_status(br) in {"nao apto", "não apto"}:
+        return "Encerrado (Não Apto)"
+    if any(_normalize_status(r.get(k, "")) in {"erro", "failed"} for k in
+           ["status_brasil_risk", "status_rlog_cielo", "status_rlog_geral", "status_bringg"]):
+        return "Erro"
+
+    statuses = [
+        r.get("status_brasil_risk", ""),
+        r.get("status_rlog_cielo", ""),
+        r.get("status_rlog_geral", ""),
+        r.get("status_bringg", ""),
+    ]
+    if all(_normalize_status(s) in {"done", "concluido", "concluído"} for s in statuses):
+        return "Concluído"
+    return "Em Andamento"
+
+def _mark_running(request_id: str, system: str) -> None:
+    db.insert_event_admin(request_id, "INFO", system, "Início da execução")
+    # opcional: setar status como "Em Execução"
+    field = {
+        "BRASIL_RISK": "status_brasil_risk",
+        "RLOG_CIELO": "status_rlog_cielo",
+        "RLOG_GERAL": "status_rlog_geral",
+        "BRINGG": "status_bringg",
+    }[system]
+    db.update_request_admin(request_id, {field: "Em Execução", "status_overall": "Em Andamento"})
+
+def _mark_done(request_id: str, system: str) -> None:
+    field = {
+        "BRASIL_RISK": "status_brasil_risk",
+        "RLOG_CIELO": "status_rlog_cielo",
+        "RLOG_GERAL": "status_rlog_geral",
+        "BRINGG": "status_bringg",
+    }[system]
+    db.update_request_admin(request_id, {field: "Concluído"})
+    db.insert_event_admin(request_id, "INFO", system, "Finalizado com sucesso")
+
+    r = db.get_request_admin(request_id) or {}
+    overall = _recompute_overall(r)
+    db.update_request_admin(request_id, {"status_overall": overall})
+
+def _mark_failed(request_id: str, system: str, err: Exception) -> None:
+    field = {
+        "BRASIL_RISK": "status_brasil_risk",
+        "RLOG_CIELO": "status_rlog_cielo",
+        "RLOG_GERAL": "status_rlog_geral",
+        "BRINGG": "status_bringg",
+    }[system]
+    db.update_request_admin(request_id, {field: "Erro", "status_overall": "Erro"})
+    db.insert_event_admin(request_id, "ERROR", system, "Falha na execução", {"error": str(err)})
 
 
 def run_brasil_risk(request_id: str) -> None:
-    r = db.get_request(request_id)
-    if not r:
-        return
-
-    if int(r.get("cnh_received", 0)) == 0:
-        db.update_request_fields(request_id, {
-            "status_overall": "Bloqueado (CNH)",
-            "status_brasil_risk": "Bloqueado (CNH)",
-        })
-        db.insert_event(request_id, "WARN", "Execução bloqueada: CNH não marcada como recebida.")
-        return
-
-    db.update_request_fields(request_id, {
-        "status_overall": "Em processo",
-        "status_brasil_risk": "Em processo",
-    })
-
-    ok, msg = _simulate("Brasil Risk", request_id, seconds=2.5)
-    if not ok:
-        db.update_request_fields(request_id, {
-            "status_overall": "Erro",
-            "status_brasil_risk": "Erro",
-        })
-        db.insert_event(request_id, "ERROR", f"Brasil Risk: {msg}")
-        return
-
-    # Regra do negócio: Brasil Risk autoriza o restante via APTO / NÃO APTO
-    decision = "Apto" if random.random() < 0.80 else "Não Apto"
-    db.update_request_fields(request_id, {
-        "status_brasil_risk": decision,
-        "status_overall": "Aguardando (próximos sistemas)" if decision == "Apto" else "Encerrado (Não Apto)",
-    })
-    if decision == "Apto":
-        db.insert_event(request_id, "INFO", "Brasil Risk: courier APTO. Fluxo pode seguir para Rlog/Bringg.")
-    else:
-        db.insert_event(request_id, "WARN", "Brasil Risk: courier NÃO APTO. Fluxo deve ser encerrado e comunicado ao solicitante.")
-
-
-def _guard_apto(request_id: str) -> bool:
-    r = db.get_request(request_id)
-    if not r:
-        return False
-    if r.get("status_brasil_risk") != "Apto":
-        db.insert_event(request_id, "WARN", "Bloqueado: somente executar após Brasil Risk = Apto.")
-        return False
-    return True
-
+    system = "BRASIL_RISK"
+    try:
+        _mark_running(request_id, system)
+        # TODO: Aqui entra Playwright + Captcha assistido
+        _mark_done(request_id, system)
+    except Exception as e:
+        _mark_failed(request_id, system, e)
+        raise
 
 def run_rlog_cielo(request_id: str) -> None:
-    if not _guard_apto(request_id):
-        return
+    system = "RLOG_CIELO"
+    try:
+        r = db.get_request_admin(request_id) or {}
+        if not _is_apto(r.get("status_brasil_risk", "")):
+            raise RuntimeError("Bloqueado: Brasil Risk ainda não está APTO/Concluído.")
 
-    db.update_request_fields(request_id, {"status_rlog_cielo": "Em processo", "status_overall": "Em processo"})
-    ok, msg = _simulate("Rlog Cielo", request_id, seconds=1.6)
-    if ok:
-        db.update_request_fields(request_id, {"status_rlog_cielo": "Concluído"})
-        db.insert_event(request_id, "INFO", "Rlog Cielo: concluído.")
-    else:
-        db.update_request_fields(request_id, {"status_rlog_cielo": "Erro", "status_overall": "Erro"})
-        db.insert_event(request_id, "ERROR", f"Rlog Cielo: {msg}")
-
+        _mark_running(request_id, system)
+        # TODO: Playwright do Rlog Cielo
+        _mark_done(request_id, system)
+    except Exception as e:
+        _mark_failed(request_id, system, e)
+        raise
 
 def run_rlog_geral(request_id: str) -> None:
-    if not _guard_apto(request_id):
-        return
-
-    db.update_request_fields(request_id, {"status_rlog_geral": "Em processo", "status_overall": "Em processo"})
-    ok, msg = _simulate("Rlog Geral", request_id, seconds=1.6)
-    if ok:
-        db.update_request_fields(request_id, {"status_rlog_geral": "Concluído"})
-        db.insert_event(request_id, "INFO", "Rlog Geral: concluído.")
-    else:
-        db.update_request_fields(request_id, {"status_rlog_geral": "Erro", "status_overall": "Erro"})
-        db.insert_event(request_id, "ERROR", f"Rlog Geral: {msg}")
-
+    system = "RLOG_GERAL"
+    try:
+        r = db.get_request_admin(request_id) or {}
+        if not _is_apto(r.get("status_brasil_risk", "")):
+            raise RuntimeError("Bloqueado: Brasil Risk ainda não está APTO/Concluído.")
+        _mark_running(request_id, system)
+        # TODO: Playwright do Rlog Geral
+        _mark_done(request_id, system)
+    except Exception as e:
+        _mark_failed(request_id, system, e)
+        raise
 
 def run_bringg(request_id: str) -> None:
-    if not _guard_apto(request_id):
-        return
-
-    db.update_request_fields(request_id, {"status_bringg": "Em processo", "status_overall": "Em processo"})
-    ok, msg = _simulate("Bringg", request_id, seconds=1.6)
-    if ok:
-        db.update_request_fields(request_id, {"status_bringg": "Concluído"})
-        r = db.get_request(request_id)
-        if r and r.get("status_rlog_cielo") == "Concluído" and r.get("status_rlog_geral") == "Concluído":
-            db.update_request_fields(request_id, {"status_overall": "Concluído"})
-        else:
-            db.update_request_fields(request_id, {"status_overall": "Aguardando (etapas pendentes)"})
-        db.insert_event(request_id, "INFO", "Bringg: concluído.")
-    else:
-        db.update_request_fields(request_id, {"status_bringg": "Erro", "status_overall": "Erro"})
-        db.insert_event(request_id, "ERROR", f"Bringg: {msg}")
+    system = "BRINGG"
+    try:
+        r = db.get_request_admin(request_id) or {}
+        if not _is_apto(r.get("status_brasil_risk", "")):
+            raise RuntimeError("Bloqueado: Brasil Risk ainda não está APTO/Concluído.")
+        _mark_running(request_id, system)
+        # TODO: Playwright do Bringg
+        _mark_done(request_id, system)
+    except Exception as e:
+        _mark_failed(request_id, system, e)
+        raise

@@ -1,6 +1,8 @@
-streamlit/
+.streamlit/
 .env
 venv/
 .venv
 __pycache__/
 Docs/
+certs/
+tools/

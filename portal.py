@@ -2,25 +2,23 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
-import pandas as pd
 import streamlit as st
-from dotenv import load_dotenv
 
-import db
-import services
 import validators as v
+import bases  # mantenha seu bases.py atual
+import db_supabase as db
+from net_guard import require_supabase_portal_ok
 
-import bases
+st.set_page_config(page_title="Cadastro Courier - Portal", layout="wide")
 
-load_dotenv()
 db.init_db()
+require_supabase_portal_ok(db)
 
-st.set_page_config(page_title="Cadastro Courier", layout="wide")
+
 
 UF_LIST = ["AC","AL","AP","AM","BA","CE","DF","ES","GO","MA","MT","MS","MG","PA","PB","PR","PE","PI","RJ","RN","RS","RO","RR","SC","SP","SE","TO"]
-
 GENDER_LIST = ["Masculino", "Feminino", "Outros"]
 FUNCAO_LIST = ["Motorista", "Ajudante"]
 PERFIL_FIXO = "Agregado"
@@ -48,6 +46,7 @@ DESCRED_MOTIVOS = [
     "Outros",
 ]
 
+
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -62,90 +61,61 @@ def explain_hierarchy() -> None:
         "Hierarquia do fluxo:\n"
         "1) Brasil Risk é o gatekeeper: somente após Brasil Risk indicar **Apto** o cadastro deve seguir.\n"
         "2) Depois: Rlog Cielo → Rlog Geral → Bringg.\n"
-        "3) Se Brasil Risk indicar **Não Apto**, o fluxo deve ser encerrado e comunicado ao solicitante."
+        "3) Se Brasil Risk indicar **Não Apto**, o fluxo deve ser encerrado."
     )
 
 def clear_draft() -> None:
     keys = list(st.session_state.keys())
     for k in keys:
-        if k.startswith("draft_") or k.startswith("veh_"):
+        if k.startswith("draft_") or k.startswith("veh_") or k.startswith("ui_"):
             del st.session_state[k]
 
 def portal_header() -> None:
     st.title("Cadastro Courier")
     st.caption("Brasil Risk / Rlog Cielo / Rlog Geral / Bringg")
 
-def portal_solicitacoes_view() -> None:
-    st.subheader("Solicitações")
+
+def portal_acompanhar_view() -> None:
+    st.subheader("Acompanhar Solicitação")
     explain_hierarchy()
 
-    c1, c2 = st.columns([2, 1])
+    c1, c2 = st.columns(2)
     with c1:
-        cpf_q = st.text_input("CPF do Motorista ou Ajudante (para consultar)", value="", placeholder="Somente números ou com máscara")
+        protocol = st.text_input("Request ID (Protocolo)", value="", placeholder="Ex.: 1A2B3C4D")
     with c2:
-        st.write("")
-        st.write("")
-        search = st.button("Pesquisar", use_container_width=True)
+        last4 = st.text_input("Últimos 4 dígitos do CPF", value="", placeholder="Ex.: 8901", max_chars=4)
 
-    if not (search or cpf_q.strip()):
-        st.caption("Digite um CPF para listar as solicitações desse courier.")
-        return
+    if st.button("Consultar", type="primary"):
+        try:
+            if not protocol.strip():
+                raise ValueError("Informe o Request ID.")
+            if not last4.strip().isdigit() or len(last4.strip()) != 4:
+                raise ValueError("Informe os últimos 4 dígitos do CPF (4 números).")
 
-    try:
-        cpf = v.validate_exact_digits("CPF", cpf_q, 11)
-    except Exception as e:
-        st.error(str(e))
-        return
+            rows = db.public_get_status(protocol.strip(), last4.strip())
+            if not rows:
+                st.warning("Nada encontrado. Verifique Request ID e os últimos 4 dígitos do CPF.")
+                return
 
-    rows = db.list_requests_by_cpf(cpf)
-    if not rows:
-        st.warning("Nenhuma solicitação encontrada para esse CPF.")
-        return
+            r = rows[0]
+            st.success("Solicitação encontrada.")
+            st.write(f"**Nome:** {r.get('nome')}")
+            st.write(f"**Nome Padrão:** {r.get('nome_padrao') or '—'}")
+            st.caption(f"Data (UTC): {r.get('created_at')}")
 
-    df = pd.DataFrame(rows)[[
-        "request_type", "cpf", "nome","nome_padrao", "role",
-        "status_brasil_risk", "status_rlog_cielo", "status_rlog_geral", "status_bringg",
-        "created_at", "status_overall", "request_id"
-    ]].rename(columns={
-        "request_type": "Tipo de Solicitação",
-        "cpf": "CPF",
-        "nome": "Nome",
-        "nome_padrao": "Nome Padrão",
-        "role": "Tipo de Função",
-        "status_brasil_risk": "Status Brasil Risk",
-        "status_rlog_cielo": "Status Rlog Cielo",
-        "status_rlog_geral": "Status Rlog Geral",
-        "status_bringg": "Status Bringg",
-        "created_at": "Data da Solicitação (UTC)",
-        "status_overall": "Status",
-        "request_id": "Request ID",
-    })
+            cols = st.columns(5)
+            cols[0].metric("Brasil Risk", status_badge(r.get("status_brasil_risk")))
+            cols[1].metric("Rlog Cielo", status_badge(r.get("status_rlog_cielo")))
+            cols[2].metric("Rlog Geral", status_badge(r.get("status_rlog_geral")))
+            cols[3].metric("Bringg", status_badge(r.get("status_bringg")))
+            cols[4].metric("Final", status_badge(r.get("status_overall")))
 
-    st.dataframe(df, use_container_width=True, hide_index=True)
+        except Exception as e:
+            st.error(str(e))
 
-    st.divider()
-    req_ids = df["Request ID"].tolist()
-    selected = st.selectbox("Abrir detalhes de uma solicitação", req_ids)
-    r = db.get_request(selected)
-
-    if r:
-        st.subheader(f"Detalhes da solicitação {selected}")
-        st.write(f"**Nome Padrão:** {r.get('nome_padrao') or '—'}")
-        cols = st.columns(5)
-        cols[0].metric("Brasil Risk", status_badge(r["status_brasil_risk"]))
-        cols[1].metric("Rlog Cielo", status_badge(r["status_rlog_cielo"]))
-        cols[2].metric("Rlog Geral", status_badge(r["status_rlog_geral"]))
-        cols[3].metric("Bringg", status_badge(r["status_bringg"]))
-        cols[4].metric("Status Final", status_badge(r["status_overall"]))
-
-        st.caption("Observação: Brasil Risk precisa estar **Apto** para continuar para Rlog/Bringg.")
-
-        events = db.list_events(selected, limit=50)
-        if events:
-            st.dataframe(pd.DataFrame(events), use_container_width=True, hide_index=True)
 
 def portal_descredenciamento_form() -> None:
-    st.subheader("Solicitação de Descredenciamento Courier")
+    st.subheader("Solicitação de Descredenciamento")
 
     c1, c2 = st.columns(2)
     with c1:
@@ -160,72 +130,82 @@ def portal_descredenciamento_form() -> None:
     requester_name = st.text_input("Solicitante (nome)", value="", key="descred_reqname")
     requester_org = st.text_input("Empresa/Base/Parceiro", value="", key="descred_reqorg")
 
-    colA, colB = st.columns([1, 1])
-    with colA:
-        if st.button("Voltar", use_container_width=True):
-            st.session_state["portal_mode"] = "HOME"
-            st.rerun()
-    with colB:
-        if st.button("Solicitar", type="primary", use_container_width=True):
-            try:
-                cpf = v.validate_exact_digits("CPF", cpf_in, 11)
-                if motivo == "Outros" and not detalhe.strip():
-                    raise ValueError("Detalhe do motivo é obrigatório quando 'Outros'.")
+    if st.button("Solicitar Descredenciamento", type="primary", use_container_width=True):
+        try:
+            cpf = v.validate_exact_digits("CPF", cpf_in, 11)
+            if motivo == "Outros" and not detalhe.strip():
+                raise ValueError("Detalhe do motivo é obrigatório quando 'Outros'.")
 
-                request_id = new_request_id()
-                payload = {
-                    "tipo_solicitacao": "DESCREDENCIAMENTO",
-                    "cpf": cpf,
-                    "motivo": motivo,
-                    "detalhe": detalhe.strip(),
-                    "requester_name": requester_name.strip(),
-                    "requester_org": requester_org.strip(),
-                }
-                meta = {
-                    "request_id": request_id,
-                    "created_at": utc_now_iso(),
-                    "request_type": "Descredenciamento",
-                    "role": "Motorista/Ajudante",
-                    "has_vehicle": False,
-                    "nome": "—",
-                    "cpf": cpf,
-                    "requester_name": requester_name.strip() or None,
-                    "requester_org": requester_org.strip() or None,
-                    "cnh_received": 1,
-                    "status_overall": "Aguardando",
-                    "status_brasil_risk": "Aguardando",
-                    "status_rlog_cielo": "Aguardando",
-                    "status_rlog_geral": "Aguardando",
-                    "status_bringg": "Aguardando",
-                }
-                db.create_request(meta, payload, vehicle_payload=None)
-                st.success(f"Solicitação de descredenciamento registrada. Request ID: {request_id}")
-                st.info("Acompanhe o status na aba 'Solicitações' consultando pelo CPF.")
-            except Exception as e:
-                st.error(str(e))
+            request_id = new_request_id()
+
+            payload = {
+                "tipo_solicitacao": "DESCREDENCIAMENTO",
+                "cpf": cpf,
+                "motivo": motivo,
+                "detalhe": detalhe.strip(),
+                "requester_name": requester_name.strip(),
+                "requester_org": requester_org.strip(),
+            }
+
+            request_row = {
+                "request_id": request_id,
+                "created_at": utc_now_iso(),
+                "request_type": "DESCREDENCIAMENTO",
+                "role": "Motorista/Ajudante",
+                "has_vehicle": False,
+
+                "nome": "—",
+                "nome_padrao": None,
+                "cpf": cpf,
+
+                "requester_name": requester_name.strip() or None,
+                "requester_org": requester_org.strip() or None,
+
+                "cnh_ack": True,
+                "cnh_received": False,
+
+                "status_overall": "Aguardando",
+                "status_brasil_risk": "Aguardando",
+                "status_rlog_cielo": "Aguardando",
+                "status_rlog_geral": "Aguardando",
+                "status_bringg": "Aguardando",
+
+                "payload_json": payload,
+            }
+
+            db.create_request_public(request_row)
+
+            st.success(f"Solicitação registrada com sucesso. Request ID: {request_id}")
+            st.info("Use o Request ID + últimos 4 dígitos do CPF para acompanhar o status.")
+        except Exception as e:
+            st.error(str(e))
+
 
 def portal_home_select_role() -> None:
     st.subheader("Modalidades Courier")
-    col1, col2 = st.columns(2)
 
+    col1, col2 = st.columns(2)
     with col1:
-        if st.button("Courier com veículo\n(Motorista)", type="primary", use_container_width=True):
+        if st.button("Courier com veículo (Motorista)", type="primary", use_container_width=True):
             st.session_state["portal_role"] = "MOTORISTA"
             st.session_state["portal_has_vehicle"] = True
-            st.session_state["portal_mode"] = "CADASTRO_FORM"
+            st.session_state["portal_mode"] = "CADASTRO_STEP1"
+            st.rerun()
 
     with col2:
-        if st.button("Courier sem veículo\n(Ajudante)", use_container_width=True):
+        if st.button("Courier sem veículo (Ajudante)", use_container_width=True):
             st.session_state["portal_role"] = "AJUDANTE"
             st.session_state["portal_has_vehicle"] = False
-            st.session_state["portal_mode"] = "CADASTRO_FORM"
+            st.session_state["portal_mode"] = "CADASTRO_STEP1"
+            st.rerun()
 
     st.divider()
-    tabs = st.tabs(["Solicitações", "Solicitar Descredenciamento"])
+    tabs = st.tabs(["Acompanhar Solicitação", "Solicitar Descredenciamento"])
     with tabs[0]:
-        portal_solicitacoes_view()
+        portal_acompanhar_view()
     with tabs[1]:
         portal_descredenciamento_form()
+
 
 def build_payload_from_session(request_id: str) -> Dict[str, Any]:
     return {
@@ -280,32 +260,48 @@ def build_payload_from_session(request_id: str) -> Dict[str, Any]:
         }
     }
 
-def build_meta_from_session(request_id: str) -> Dict[str, Any]:
+
+def build_request_row_from_session(request_id: str, cnh_ack: bool) -> Dict[str, Any]:
+    payload = build_payload_from_session(request_id=request_id)
+
     return {
         "request_id": request_id,
         "created_at": utc_now_iso(),
-        "request_type": "Cadastro",
+        "request_type": "CADASTRO",
         "role": "Motorista" if st.session_state.get("portal_role") == "MOTORISTA" else "Ajudante",
         "has_vehicle": bool(st.session_state.get("portal_has_vehicle")),
+
         "nome": st.session_state.get("draft_nome"),
         "nome_padrao": st.session_state.get("draft_nome_padrao"),
         "cpf": st.session_state.get("draft_cpf"),
+
+        "base_estado": st.session_state.get("draft_estado"),
+        "base_nome": st.session_state.get("draft_base_nome"),
+        "base_uf": st.session_state.get("draft_base_uf"),
+        "sigla_cielo": st.session_state.get("draft_sigla_cielo"),
+        "sigla_geral": st.session_state.get("draft_sigla_geral"),
+        "modalidade": st.session_state.get("draft_modalidade"),
+
         "requester_name": None,
         "requester_org": None,
-        "cnh_received": 0,
+
+        "cnh_ack": bool(cnh_ack),
+        "cnh_received": False,
+
         "status_overall": "Aguardando",
         "status_brasil_risk": "Aguardando",
         "status_rlog_cielo": "Aguardando",
         "status_rlog_geral": "Aguardando",
         "status_bringg": "Aguardando",
+
+        "payload_json": payload,
     }
+
 
 def cadastro_form_step1() -> None:
     st.subheader("Solicitação de Cadastro Courier - Etapa 1 (Dados do Courier)")
-
     st.markdown("### Base a qual o courier será associado:")
 
-    # Pré-carrega valores antigos (se existirem) ANTES dos widgets
     if "ui_estado" not in st.session_state:
         st.session_state["ui_estado"] = st.session_state.get("draft_estado", "")
     if "ui_base_nome" not in st.session_state:
@@ -358,7 +354,7 @@ def cadastro_form_step1() -> None:
 
     p4, p5, p6 = st.columns(3)
     with p4:
-        cpf_in = st.text_input("CPF *", value=st.session_state.get("draft_cpf",""))
+        cpf_in = st.text_input("CPF *", value=st.session_state.get("draft_cpf",""), placeholder="###.###.###-##")
     with p5:
         rg = st.text_input("RG *", value=st.session_state.get("draft_rg",""))
     with p6:
@@ -394,7 +390,7 @@ def cadastro_form_step1() -> None:
     with e5:
         endereco = st.text_input("Endereço *", value=st.session_state.get("draft_endereco",""))
     with e6:
-        numero = st.text_input("Numero *", value=st.session_state.get("draft_numero",""))
+        numero = st.text_input("Número *", value=st.session_state.get("draft_numero",""))
     with e7:
         complemento = st.text_input("Complemento", value=st.session_state.get("draft_complemento",""))
 
@@ -404,7 +400,7 @@ def cadastro_form_step1() -> None:
     with c1:
         telefone = st.text_input("Telefone", value=st.session_state.get("draft_telefone",""))
     with c2:
-        celular = st.text_input("Celular *", value=st.session_state.get("draft_celular",""))
+        celular = st.text_input("Celular *", value=st.session_state.get("draft_celular",""), placeholder="(##)9 ####-####")
     with c3:
         tel_com = st.text_input("Telefone Comercial", value=st.session_state.get("draft_tel_com",""))
 
@@ -414,11 +410,11 @@ def cadastro_form_step1() -> None:
     st.markdown("### Dados da Habilitação")
     h1, h2, h3 = st.columns(3)
     with h1:
-        reg = st.text_input("Numero do Registro *", value=st.session_state.get("draft_registro",""))
+        reg = st.text_input("Número do Registro *", value=st.session_state.get("draft_registro",""))
     with h2:
         cnh_no = st.text_input("CNH No. *", value=st.session_state.get("draft_cnh_no",""))
     with h3:
-        categoria = st.text_input("Categoria*", value=st.session_state.get("draft_categoria",""))
+        categoria = st.text_input("Categoria *", value=st.session_state.get("draft_categoria",""))
 
     h4, h5 = st.columns(2)
     with h4:
@@ -432,7 +428,7 @@ def cadastro_form_step1() -> None:
     with cc1:
         st.text_input("Empresa Centro de Custo *", value="FEDEX", disabled=True)
     with cc2:
-        st.text_input("Responsavel Faturamento *", value="FEDEX BRASIL", disabled=True)
+        st.text_input("Responsável Faturamento *", value="FEDEX BRASIL", disabled=True)
 
     colA, colB = st.columns([1, 1])
     with colA:
@@ -488,8 +484,8 @@ def cadastro_form_step1() -> None:
                     "draft_base_nome": base_nome.strip(),
                     "draft_estado": estado,
                     "draft_base_uf": uf_base,
-                    "draft_sigla_cielo": sigla_cielo.strip(),
-                    "draft_sigla_geral": sigla_geral.strip(),
+                    "draft_sigla_cielo": sigla_cielo.strip().upper(),
+                    "draft_sigla_geral": sigla_geral.strip().upper(),
                     "draft_modalidade": modalidade,
 
                     "draft_nome": nome_n,
@@ -526,17 +522,18 @@ def cadastro_form_step1() -> None:
                 st.session_state["draft_nome_padrao"] = nome_padrao
 
                 if st.session_state.get("portal_has_vehicle"):
-                    st.session_state["portal_mode"] = "CADASTRO_FORM_STEP2"
+                    st.session_state["portal_mode"] = "CADASTRO_STEP2"
                 else:
-                    st.session_state["portal_mode"] = "CADASTRO_SUBMIT_NO_VEHICLE"
+                    st.session_state["portal_mode"] = "CADASTRO_REVIEW_NO_VEHICLE"
+
                 st.rerun()
 
             except Exception as e:
                 st.error(str(e))
 
+
 def cadastro_form_step2_vehicle() -> None:
     st.subheader("Solicitação de Cadastro Courier - Etapa 2 (Veículo)")
-    st.caption("(Campos baseados no Excalidraw. Alguns fluxos são condicionais.)")
 
     v1, v2, v3 = st.columns(3)
     with v1:
@@ -607,15 +604,22 @@ def cadastro_form_step2_vehicle() -> None:
     st.selectbox("Equip. Rastreamento *", EQUIP_RASTREAMENTO)
 
     st.divider()
+    st.warning("CNH não é enviada por este portal. Você deve encaminhar a CNH ao gestor por canal corporativo.")
+
+    cnh_ack = st.checkbox("Estou ciente e vou enviar a CNH ao gestor (obrigatório para solicitar).")
+
     colA, colB = st.columns([1, 1])
     with colA:
         if st.button("Voltar", use_container_width=True):
-            st.session_state["portal_mode"] = "CADASTRO_FORM"
+            st.session_state["portal_mode"] = "CADASTRO_STEP1"
             st.rerun()
 
     with colB:
         if st.button("Solicitar Cadastro", type="primary", use_container_width=True):
             try:
+                if not cnh_ack:
+                    raise ValueError("Confirme o envio da CNH ao gestor para continuar.")
+
                 if not placa.strip():
                     raise ValueError("Placa é obrigatória.")
                 if not chassi.strip():
@@ -658,7 +662,10 @@ def cadastro_form_step2_vehicle() -> None:
                         raise ValueError("Razão Social é obrigatória.")
 
                 request_id = new_request_id()
-                payload = build_payload_from_session(request_id=request_id)
+
+                request_row = build_request_row_from_session(request_id=request_id, cnh_ack=cnh_ack)
+                db.create_request_public(request_row)
+
                 vehicle_payload = {
                     "placa": placa.strip().upper(),
                     "tipo_veiculo": tipo,
@@ -682,16 +689,41 @@ def cadastro_form_step2_vehicle() -> None:
                     "proprietario_mae": v.normalize_name(mae_prop) if pt == "Física" else "",
                     "proprietario_celular": v.only_digits(cel_prop),
                 }
-                meta = build_meta_from_session(request_id=request_id)
 
-                db.create_request(meta, payload, vehicle_payload=vehicle_payload)
+                vehicle_row = {
+                    "request_id": request_id,
+                    "placa": placa.strip().upper(),
+                    "tipo_veiculo": tipo,
+                    "chassi": chassi.strip(),
+                    "ano_fabricacao": int(v.only_digits(ano)),
+                    "marca": marca.strip(),
+                    "modelo": modelo.strip(),
+                    "cor": cor.strip(),
+                    "renavam": v.only_digits(renavam),
+                    "uf": uf_veic,
+                    "cidade": v.normalize_name(cidade_veic),
+                    "categoria": categoria,
+                    "rntrc": rntrc.strip() if categoria == "Aluguel" else "",
+                    "validade_rntrc": validade_rntrc.strip() if categoria == "Aluguel" else "",
+                    "proprietario_tipo": pt,
+                    "proprietario_doc": v.only_digits(doc),
+                    "proprietario_rg_ie": v.only_digits(rg_prop),
+                    "proprietario_uf": uf_prop,
+                    "proprietario_nome": v.normalize_name(nome_prop) if pt == "Física" else nome_prop.strip(),
+                    "proprietario_nasc": nasc_prop.strip() if pt == "Física" else "",
+                    "proprietario_mae": v.normalize_name(mae_prop) if pt == "Física" else "",
+                    "proprietario_celular": v.only_digits(cel_prop),
+                    "payload_json": vehicle_payload,
+                }
+
+                db.create_vehicle_public(vehicle_row)
 
                 st.success(f"Solicitação registrada. Request ID: {request_id}")
                 st.info(
-                    "CNH não é enviada por este portal.\n\n"
                     "Envie a CNH por canal corporativo e informe no assunto:\n"
-                    f"CNH - RequestID {request_id} - CPF {meta['cpf']}"
+                    f"CNH - RequestID {request_id} - CPF {request_row['cpf']}"
                 )
+
                 clear_draft()
                 st.session_state["portal_mode"] = "HOME"
                 st.rerun()
@@ -699,170 +731,74 @@ def cadastro_form_step2_vehicle() -> None:
             except Exception as e:
                 st.error(str(e))
 
-def portal_cadastro_flow() -> None:
+
+def cadastro_review_no_vehicle() -> None:
+    st.subheader("Revisão final (sem veículo)")
+    st.write("Confira os dados e confirme o envio da CNH ao gestor.")
+
+    st.write({
+        "Nome": st.session_state.get("draft_nome"),
+        "CPF": st.session_state.get("draft_cpf"),
+        "Nome Padrão": st.session_state.get("draft_nome_padrao"),
+        "Base": st.session_state.get("draft_base_nome"),
+        "UF Base": st.session_state.get("draft_base_uf"),
+        "Modalidade": st.session_state.get("draft_modalidade"),
+    })
+
+    st.warning("CNH não é enviada por este portal. Você deve encaminhar a CNH ao gestor por canal corporativo.")
+    cnh_ack = st.checkbox("Estou ciente e vou enviar a CNH ao gestor (obrigatório para solicitar).")
+
+    colA, colB = st.columns([1, 1])
+    with colA:
+        if st.button("Voltar", use_container_width=True):
+            st.session_state["portal_mode"] = "CADASTRO_STEP1"
+            st.rerun()
+
+    with colB:
+        if st.button("Solicitar Cadastro", type="primary", use_container_width=True):
+            try:
+                if not cnh_ack:
+                    raise ValueError("Confirme o envio da CNH ao gestor para continuar.")
+                request_id = new_request_id()
+                request_row = build_request_row_from_session(request_id=request_id, cnh_ack=cnh_ack)
+                db.create_request_public(request_row)
+
+                st.success(f"Solicitação registrada. Request ID: {request_id}")
+                st.info(
+                    "Envie a CNH por canal corporativo e informe no assunto:\n"
+                    f"CNH - RequestID {request_id} - CPF {request_row['cpf']}"
+                )
+                clear_draft()
+                st.session_state["portal_mode"] = "HOME"
+                st.rerun()
+            except Exception as e:
+                st.error(str(e))
+
+
+def portal_flow() -> None:
     mode = st.session_state.get("portal_mode", "HOME")
 
     if mode == "HOME":
         portal_home_select_role()
         return
 
-    if mode == "CADASTRO_FORM":
+    if mode == "CADASTRO_STEP1":
         cadastro_form_step1()
         return
 
-    if mode == "CADASTRO_FORM_STEP2":
+    if mode == "CADASTRO_STEP2":
         cadastro_form_step2_vehicle()
         return
 
-    if mode == "CADASTRO_SUBMIT_NO_VEHICLE":
-        request_id = new_request_id()
-        payload = build_payload_from_session(request_id=request_id)
-        meta = build_meta_from_session(request_id=request_id)
-        db.create_request(meta, payload, vehicle_payload=None)
-        clear_draft()
-        st.success(f"Solicitação registrada. Request ID: {request_id}")
-        st.info(
-            "CNH não é enviada por este portal.\n\n"
-            "Envie a CNH por canal corporativo e informe no assunto:\n"
-            f"CNH - RequestID {request_id} - CPF {meta['cpf']}"
-        )
-        st.session_state["portal_mode"] = "HOME"
+    if mode == "CADASTRO_REVIEW_NO_VEHICLE":
+        cadastro_review_no_vehicle()
         return
 
-def admin_view() -> None:
-    st.title("Área Administrativa")
-    st.caption("Fila, monitoramento e execução por etapa (protótipo).")
+    st.session_state["portal_mode"] = "HOME"
+    st.rerun()
 
-    explain_hierarchy()
 
-    query = st.text_input("Pesquisa de couriers por CPF ou Nome do Courier", value="")
-    rows = db.search_requests(query)
-
-    if not rows:
-        st.warning("Nenhuma solicitação encontrada.")
-        return
-
-    df = pd.DataFrame(rows)[[
-        "request_type","cpf","nome","nome_padrao","role",
-        "status_brasil_risk","status_rlog_cielo","status_rlog_geral","status_bringg",
-        "created_at","status_overall","request_id","cnh_received"
-    ]].rename(columns={
-        "request_type":"Tipo de Solicitação",
-        "cpf":"CPF",
-        "nome":"Nome do Motorista ou Ajudante",
-        "nome_padrao": "Nome Padrão",
-        "role":"Tipo de função",
-        "status_brasil_risk":"Status Brasil Risk",
-        "status_rlog_cielo":"Status Rlog Cielo",
-        "status_rlog_geral":"Status Rlog Geral",
-        "status_bringg":"Status Bringg",
-        "created_at":"Data da Solicitação (UTC)",
-        "status_overall":"Status",
-        "request_id":"Request ID",
-        "cnh_received":"CNH recebida?",
-    })
-
-    st.subheader("Solicitações")
-    st.dataframe(df, use_container_width=True, hide_index=True)
-
-    st.divider()
-    selected = st.selectbox("Abrir Request ID", df["Request ID"].tolist())
-    r = db.get_request(selected)
-    if not r:
-        st.error("Request não encontrado.")
-        return
-
-    payload = db.get_payload(selected)
-    vehicle_payload = db.get_vehicle_payload(selected)
-
-    left, right = st.columns([1, 1])
-
-    with left:
-        st.subheader("Resumo")
-        st.write({
-            "Request ID": r["request_id"],
-            "Tipo": r["request_type"],
-            "CPF": r["cpf"],
-            "Nome": r["nome"],
-            "Nome Padrão": r.get("nome_padrao"),
-            "Função": r["role"],
-            "Com veículo": bool(r["has_vehicle"]),
-        })
-
-        cnh = st.checkbox("CNH recebida (marcar manualmente)", value=bool(r.get("cnh_received")))
-        if st.button("Salvar CNH recebida"):
-            db.update_request_fields(selected, {"cnh_received": int(cnh)})
-            db.insert_event(selected, "INFO", f"CNH recebida: {cnh}")
-            st.success("Atualizado.")
-            st.rerun()
-
-        st.subheader("Detalhes do Formulário (JSON)")
-        st.json(payload)
-
-        if vehicle_payload:
-            st.subheader("Veículo (JSON)")
-            st.json(vehicle_payload)
-
-    with right:
-        st.subheader("Execução por etapa")
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("Start Brasil Risk", type="primary", use_container_width=True):
-                services.run_brasil_risk(selected)
-                st.success("Processo Brasil Risk finalizado (protótipo).")
-                st.rerun()
-
-            if st.button("Start Rlog Cielo", use_container_width=True):
-                services.run_rlog_cielo(selected)
-                st.success("Processo Rlog Cielo finalizado (protótipo).")
-                st.rerun()
-
-        with col2:
-            if st.button("Start Rlog Geral", use_container_width=True):
-                services.run_rlog_geral(selected)
-                st.success("Processo Rlog Geral finalizado (protótipo).")
-                st.rerun()
-
-            if st.button("Start Bringg", use_container_width=True):
-                services.run_bringg(selected)
-                st.success("Processo Bringg finalizado (protótipo).")
-                st.rerun()
-
-        st.divider()
-        st.subheader("Status atual")
-        m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric("Brasil Risk", status_badge(r["status_brasil_risk"]))
-        m2.metric("Rlog Cielo", status_badge(r["status_rlog_cielo"]))
-        m3.metric("Rlog Geral", status_badge(r["status_rlog_geral"]))
-        m4.metric("Bringg", status_badge(r["status_bringg"]))
-        m5.metric("Final", status_badge(r["status_overall"]))
-
-        st.divider()
-        st.subheader("Eventos (últimos 200)")
-        events = db.list_events(selected, limit=200)
-        if events:
-            st.dataframe(pd.DataFrame(events), use_container_width=True, hide_index=True)
-
-def report_view() -> None:
-    st.title("Relatório")
-    rows = db.list_requests()
-    if not rows:
-        st.info("Sem dados.")
-        return
-    df = pd.DataFrame(rows)
-    st.dataframe(df, use_container_width=True, hide_index=True)
-    csv = df.to_csv(index=False).encode("utf-8")
-    st.download_button("Baixar CSV", data=csv, file_name="relatorio_cadastro_courier.csv", mime="text/csv")
-
-st.sidebar.title("Menu")
-area = st.sidebar.radio("Área", ["Portal (externo)", "Área Administrativa", "Relatório"])
-
-if area == "Portal (externo)":
-    portal_header()
-    if "portal_mode" not in st.session_state:
-        st.session_state["portal_mode"] = "HOME"
-    portal_cadastro_flow()
-elif area == "Área Administrativa":
-    admin_view()
-else:
-    report_view()
+portal_header()
+if "portal_mode" not in st.session_state:
+    st.session_state["portal_mode"] = "HOME"
+portal_flow()

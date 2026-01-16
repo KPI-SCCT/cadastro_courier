@@ -1,83 +1,58 @@
+from __future__ import annotations
 import re
 from datetime import datetime
+from typing import Optional
 
-def only_digits(s: str) -> str:
-    return re.sub(r"\D+", "", s or "")
+_RE_DIGITS = re.compile(r"\D+")
+_RE_MODAL_SIGLA = re.compile(r"\(([^)]+)\)")
 
-def normalize_name(name: str) -> str:
-    name = (name or "").strip()
-    return " ".join([w.capitalize() for w in name.split()])
+LOWER_PARTS = {"da", "das", "de", "do", "dos", "e"}
 
-def validate_exact_digits(field: str, value: str, n: int) -> str:
-    value = only_digits(value)
-    if len(value) != n:
-        raise ValueError(f"{field} deve ter {n} dígitos. Recebido: {len(value)}")
-    return value
 
-def validate_phone(field: str, value: str) -> str:
-    v = only_digits(value)
-    if len(v) not in (10, 11):
-        raise ValueError(f"{field} deve ter 10 ou 11 dígitos (com DDD).")
+def only_digits(value: str) -> str:
+    return re.sub(_RE_DIGITS, "", value or "")
+
+def validate_exact_digits(label: str, value: str, n: int) -> str:
+    d = only_digits(value)
+    if len(d) != n:
+        raise ValueError(f"{label} deve conter exatamente {n} números. Você informou {len(d)}.")
+    return d
+
+def validate_date_ddmmyyyy(label: str, value: str) -> str:
+    v = (value or "").strip()
+    try:
+        datetime.strptime(v, "%d/%m/%Y")
+    except Exception:
+        raise ValueError(f"{label} inválida. Use o formato dd/mm/aaaa.")
     return v
 
-def validate_date_ddmmyyyy(field: str, value: str) -> str:
-    try:
-        datetime.strptime(value.strip(), "%d/%m/%Y")
-        return value.strip()
-    except Exception:
-        raise ValueError(f"{field} deve estar no formato dd/mm/aaaa.")
+def validate_phone(label: str, value: str) -> str:
+    d = only_digits(value)
+    # BR: 10 ou 11 dígitos (com DDD)
+    if len(d) not in (10, 11):
+        raise ValueError(f"{label} inválido. Informe DDD + número (10 ou 11 dígitos).")
+    return d
 
-def extract_sigla_modalidade(modalidade: str) -> str:
-    m = re.search(r"\(([^)]+)\)\s*$", (modalidade or "").strip())
-    return (m.group(1).strip().upper() if m else "")
+def normalize_name(name: str) -> str:
+    s = (name or "").strip()
+    if not s:
+        return s
+    parts = [p for p in re.split(r"\s+", s) if p]
+    out = []
+    for p in parts:
+        pl = p.lower()
+        if pl in LOWER_PARTS:
+            out.append(pl)
+        else:
+            out.append(pl[:1].upper() + pl[1:])
+    return " ".join(out)
 
-def sigla_cielo_prefix(sigla_cielo: str) -> str:
-    tokens = re.findall(r"[A-Za-z0-9]+", (sigla_cielo or "").upper())
-    if not tokens:
+def make_nome_padrao(sigla_base_cielo: str, nome: str, modalidade: str) -> str:
+    sigla = (sigla_base_cielo or "").strip().upper()
+    n = (nome or "").strip().upper()
+    mod = (modalidade or "").strip()
+    m = _RE_MODAL_SIGLA.search(mod)
+    mod_sigla = (m.group(1).strip().upper() if m else "—")
+    if not sigla or not n:
         return ""
-    t = tokens[0]
-    return t[:3] if len(t) >= 3 else t
-
-def make_nome_padrao(sigla_cielo: str, nome: str, modalidade: str) -> str:
-    prefix = sigla_cielo_prefix(sigla_cielo)
-    nome_up = (nome or "").strip().upper()
-    mod = extract_sigla_modalidade(modalidade)
-    parts = [p for p in [prefix, nome_up, mod] if p]
-    return " - ".join(parts)
-
-def format_cpf_mask(digits: str) -> str:
-    d = only_digits(digits)[:11]
-    if not d:
-        return ""
-    # ###.###.###-##
-    if len(d) <= 3:
-        return d
-    if len(d) <= 6:
-        return f"{d[:3]}.{d[3:]}"
-    if len(d) <= 9:
-        return f"{d[:3]}.{d[3:6]}.{d[6:]}"
-    return f"{d[:3]}.{d[3:6]}.{d[6:9]}-{d[9:]}"
-
-def format_phone_mask(digits: str) -> str:
-    d = only_digits(digits)[:11]
-    if not d:
-        return ""
-    # 10 dígitos: (##) ####-####
-    # 11 dígitos: (##) # ####-####
-    if len(d) <= 2:
-        return f"({d}"
-    ddd = d[:2]
-    rest = d[2:]
-    if len(d) <= 10:
-        # (DD) XXXX-XXXX
-        if len(rest) <= 4:
-            return f"({ddd}) {rest}"
-        if len(rest) <= 8:
-            return f"({ddd}) {rest[:4]}-{rest[4:]}"
-        return f"({ddd}) {rest[:4]}-{rest[4:8]}"
-    else:
-        # (DD) 9 XXXX-XXXX
-        if len(rest) <= 1:
-            return f"({ddd}) {rest}"
-        if len(rest) <= 5:
-            re
+    return f"{sigla} - {n} - {mod_sigla}"
