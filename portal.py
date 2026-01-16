@@ -13,10 +13,7 @@ from net_guard import require_supabase_portal_ok
 
 st.set_page_config(page_title="Cadastro Courier - Portal", layout="wide")
 
-db.init_db()
 require_supabase_portal_ok(db)
-
-
 
 UF_LIST = ["AC","AL","AP","AM","BA","CE","DF","ES","GO","MA","MT","MS","MG","PA","PB","PR","PE","PI","RJ","RN","RS","RO","RR","SC","SP","SE","TO"]
 GENDER_LIST = ["Masculino", "Feminino", "Outros"]
