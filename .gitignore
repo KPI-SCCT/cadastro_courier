@@ -6,6 +6,8 @@ __pycache__/
 Docs/
 certs/
 tools/
-.devcontainer/devcontainer.json
+.devcontainer/
+devcontainer.json
 app_streamlit_old.txt
 db.py
+admin.py
