@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import streamlit as st
 
@@ -47,11 +47,14 @@ DESCRED_MOTIVOS = [
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
+
 def new_request_id() -> str:
     return str(uuid.uuid4())[:8].upper()
 
+
 def status_badge(status: str) -> str:
     return status or "Aguardando"
+
 
 def explain_hierarchy() -> None:
     st.info(
@@ -61,11 +64,13 @@ def explain_hierarchy() -> None:
         "3) Se Brasil Risk indicar **Não Apto**, o fluxo deve ser encerrado."
     )
 
+
 def clear_draft() -> None:
     keys = list(st.session_state.keys())
     for k in keys:
         if k.startswith("draft_") or k.startswith("veh_") or k.startswith("ui_"):
             del st.session_state[k]
+
 
 def portal_header() -> None:
     st.title("Cadastro Courier")
@@ -144,35 +149,33 @@ def portal_descredenciamento_form() -> None:
                 "requester_org": requester_org.strip(),
             }
 
+            # IMPORTANTE:
+            # Portal NÃO insere direto em tabela.
+            # Ele chama a RPC portal_submit_request(req, veh).
             request_row = {
                 "request_id": request_id,
                 "created_at": utc_now_iso(),
                 "request_type": "DESCREDENCIAMENTO",
                 "role": "Motorista/Ajudante",
                 "has_vehicle": False,
-
                 "nome": "—",
                 "nome_padrao": None,
                 "cpf": cpf,
-
-                "requester_name": requester_name.strip() or None,
-                "requester_org": requester_org.strip() or None,
-
-                "cnh_ack": True,
+                "base_nome": None,
+                "base_uf": None,
+                "modalidade": None,
                 "cnh_received": False,
-
                 "status_overall": "Aguardando",
                 "status_brasil_risk": "Aguardando",
                 "status_rlog_cielo": "Aguardando",
                 "status_rlog_geral": "Aguardando",
                 "status_bringg": "Aguardando",
-
                 "payload_json": payload,
             }
 
-            db.create_request_public(request_row)
+            rid = db.portal_submit_request(request_row, None)
 
-            st.success(f"Solicitação registrada com sucesso. Request ID: {request_id}")
+            st.success(f"Solicitação registrada com sucesso. Request ID: {rid}")
             st.info("Use o Request ID + últimos 4 dígitos do CPF para acompanhar o status.")
         except Exception as e:
             st.error(str(e))
@@ -210,13 +213,11 @@ def build_payload_from_session(request_id: str) -> Dict[str, Any]:
         "tipo_solicitacao": "CADASTRO",
         "role": st.session_state.get("portal_role"),
         "has_vehicle": bool(st.session_state.get("portal_has_vehicle")),
-
         "base_nome": st.session_state.get("draft_base_nome"),
         "base_uf": st.session_state.get("draft_base_uf"),
         "sigla_base_cielo": st.session_state.get("draft_sigla_cielo"),
         "sigla_base_geral": st.session_state.get("draft_sigla_geral"),
         "modalidade": st.session_state.get("draft_modalidade"),
-
         "dados_pessoais": {
             "nome": st.session_state.get("draft_nome"),
             "genero": st.session_state.get("draft_genero"),
@@ -254,12 +255,13 @@ def build_payload_from_session(request_id: str) -> Dict[str, Any]:
         "centro_custos": {
             "empresa_centro_custo": "FEDEX",
             "responsavel_faturamento": "FEDEX BRASIL",
-        }
+        },
     }
 
 
 def build_request_row_from_session(request_id: str, cnh_ack: bool) -> Dict[str, Any]:
     payload = build_payload_from_session(request_id=request_id)
+    payload["cnh_ack"] = bool(cnh_ack)
 
     return {
         "request_id": request_id,
@@ -267,30 +269,18 @@ def build_request_row_from_session(request_id: str, cnh_ack: bool) -> Dict[str, 
         "request_type": "CADASTRO",
         "role": "Motorista" if st.session_state.get("portal_role") == "MOTORISTA" else "Ajudante",
         "has_vehicle": bool(st.session_state.get("portal_has_vehicle")),
-
         "nome": st.session_state.get("draft_nome"),
         "nome_padrao": st.session_state.get("draft_nome_padrao"),
         "cpf": st.session_state.get("draft_cpf"),
-
-        "base_estado": st.session_state.get("draft_estado"),
         "base_nome": st.session_state.get("draft_base_nome"),
         "base_uf": st.session_state.get("draft_base_uf"),
-        "sigla_cielo": st.session_state.get("draft_sigla_cielo"),
-        "sigla_geral": st.session_state.get("draft_sigla_geral"),
         "modalidade": st.session_state.get("draft_modalidade"),
-
-        "requester_name": None,
-        "requester_org": None,
-
-        "cnh_ack": bool(cnh_ack),
         "cnh_received": False,
-
         "status_overall": "Aguardando",
         "status_brasil_risk": "Aguardando",
         "status_rlog_cielo": "Aguardando",
         "status_rlog_geral": "Aguardando",
         "status_bringg": "Aguardando",
-
         "payload_json": payload,
     }
 
@@ -602,7 +592,6 @@ def cadastro_form_step2_vehicle() -> None:
 
     st.divider()
     st.warning("CNH não é enviada por este portal. Você deve encaminhar a CNH ao gestor por canal corporativo.")
-
     cnh_ack = st.checkbox("Estou ciente e vou enviar a CNH ao gestor (obrigatório para solicitar).")
 
     colA, colB = st.columns([1, 1])
@@ -659,9 +648,7 @@ def cadastro_form_step2_vehicle() -> None:
                         raise ValueError("Razão Social é obrigatória.")
 
                 request_id = new_request_id()
-
                 request_row = build_request_row_from_session(request_id=request_id, cnh_ack=cnh_ack)
-                db.create_request_public(request_row)
 
                 vehicle_payload = {
                     "placa": placa.strip().upper(),
@@ -713,12 +700,17 @@ def cadastro_form_step2_vehicle() -> None:
                     "payload_json": vehicle_payload,
                 }
 
-                db.create_vehicle_public(vehicle_row)
+                # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                # AQUI É A MUDANÇA PRINCIPAL:
+                # NÃO faz create_request_public / create_vehicle_public.
+                # Faz UMA chamada RPC que insere tudo no banco em transação.
+                # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                rid = db.portal_submit_request(request_row, vehicle_row)
 
-                st.success(f"Solicitação registrada. Request ID: {request_id}")
+                st.success(f"Solicitação registrada. Request ID: {rid}")
                 st.info(
                     "Envie a CNH por canal corporativo e informe no assunto:\n"
-                    f"CNH - RequestID {request_id} - CPF {request_row['cpf']}"
+                    f"CNH - RequestID {rid} - CPF {request_row['cpf']}"
                 )
 
                 clear_draft()
@@ -756,14 +748,17 @@ def cadastro_review_no_vehicle() -> None:
             try:
                 if not cnh_ack:
                     raise ValueError("Confirme o envio da CNH ao gestor para continuar.")
+
                 request_id = new_request_id()
                 request_row = build_request_row_from_session(request_id=request_id, cnh_ack=cnh_ack)
-                db.create_request_public(request_row)
 
-                st.success(f"Solicitação registrada. Request ID: {request_id}")
+                # >>> mudança principal: chama RPC
+                rid = db.portal_submit_request(request_row, None)
+
+                st.success(f"Solicitação registrada. Request ID: {rid}")
                 st.info(
                     "Envie a CNH por canal corporativo e informe no assunto:\n"
-                    f"CNH - RequestID {request_id} - CPF {request_row['cpf']}"
+                    f"CNH - RequestID {rid} - CPF {request_row['cpf']}"
                 )
                 clear_draft()
                 st.session_state["portal_mode"] = "HOME"

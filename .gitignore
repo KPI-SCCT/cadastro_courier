@@ -1,13 +1,28 @@
-.streamlit/
-.env
-venv/
-.venv
+# Python
 __pycache__/
+*.py[cod]
+*.log
+
+# Virtual env
+venv/
+.venv/
+
+# Env local
+.env
+*.env
+
+# Streamlit (não commitar secrets)
+.streamlit/secrets.toml
+
+# IDE/OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Pastas locais do seu projeto que não precisam ir pro Portal
 Docs/
 certs/
 tools/
 .devcontainer/
-devcontainer.json
 app_streamlit_old.txt
-db.py
-admin.py

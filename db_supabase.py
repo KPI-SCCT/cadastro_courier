@@ -3,46 +3,53 @@ from typing import Any, Dict, List, Optional
 
 from supabase_client import get_public_client, get_admin_client
 
-# -------------------- PORTAL (ANON) --------------------
+# ============================================================
+# PORTAL (ANON) -> SEM INSERT DIRETO EM TABELA
+# ============================================================
 
-def create_request_public(row: Dict[str, Any]) -> None:
+def portal_submit_request(req: Dict[str, Any], veh: Optional[Dict[str, Any]]) -> str:
+    """
+    Envia uma solicitação via RPC (portal_submit_request) para o banco inserir
+    requests (+ vehicles opcional) com segurança.
+    """
     sb = get_public_client()
-    try:
-        # evita retornar a linha inserida
-        resp = sb.table("requests").insert(row, returning="minimal").execute()
-    except TypeError:
-        # compatibilidade com versões que não aceitam returning=
-        resp = sb.table("requests").insert(row).execute()
+    resp = sb.rpc("portal_submit_request", {"req": req, "veh": veh}).execute()
 
-    if getattr(resp, "error", None):
-        raise RuntimeError(f"Insert requests falhou: {resp.error}")
-    # se returning=minimal, resp.data pode vir None/[] e ainda assim estar OK
+    # supabase-py pode expor erro em resp.error ou embutido
+    err = getattr(resp, "error", None)
+    if err:
+        raise RuntimeError(f"RPC portal_submit_request falhou: {err}")
 
-def create_vehicle_public(row: Dict[str, Any]) -> None:
-    sb = get_public_client()
-    try:
-        resp = sb.table("vehicles").insert(row, returning="minimal").execute()
-    except TypeError:
-        resp = sb.table("vehicles").insert(row).execute()
+    data = resp.data or {}
+    if not isinstance(data, dict) or not data.get("ok"):
+        raise RuntimeError(f"RPC portal_submit_request retornou falha: {data}")
 
-    if getattr(resp, "error", None):
-        raise RuntimeError(f"Insert vehicles falhou: {resp.error}")
+    return data["request_id"]
+
 
 def public_get_status(protocol: str, cpf_last4: str) -> List[Dict[str, Any]]:
     sb = get_public_client()
     resp = sb.rpc("public_get_status", {"protocol": protocol, "cpf_last4": cpf_last4}).execute()
-    if getattr(resp, "error", None):
-        raise RuntimeError(f"RPC public_get_status falhou: {resp.error}")
+
+    err = getattr(resp, "error", None)
+    if err:
+        raise RuntimeError(f"RPC public_get_status falhou: {err}")
+
     return resp.data or []
 
-# -------------------- ADMIN (SERVICE ROLE) --------------------
+
+# ============================================================
+# ADMIN (SERVICE ROLE) -> PODE LER/ATUALIZAR DIRETO
+# ============================================================
 
 def list_requests_admin(limit: int = 300) -> List[Dict[str, Any]]:
     sb = get_admin_client()
     resp = sb.table("requests").select("*").order("created_at", desc=True).limit(limit).execute()
-    if getattr(resp, "error", None):
-        raise RuntimeError(f"List requests admin falhou: {resp.error}")
+    err = getattr(resp, "error", None)
+    if err:
+        raise RuntimeError(f"List requests admin falhou: {err}")
     return resp.data or []
+
 
 def search_requests_admin(query: str, limit: int = 300) -> List[Dict[str, Any]]:
     q = (query or "").strip()
@@ -58,25 +65,31 @@ def search_requests_admin(query: str, limit: int = 300) -> List[Dict[str, Any]]:
         .limit(limit)
         .execute()
     )
-    if getattr(resp, "error", None):
-        raise RuntimeError(f"Search requests admin falhou: {resp.error}")
+    err = getattr(resp, "error", None)
+    if err:
+        raise RuntimeError(f"Search requests admin falhou: {err}")
     return resp.data or []
+
 
 def get_request_admin(request_id: str) -> Optional[Dict[str, Any]]:
     sb = get_admin_client()
     resp = sb.table("requests").select("*").eq("request_id", request_id).limit(1).execute()
-    if getattr(resp, "error", None):
-        raise RuntimeError(f"Get request admin falhou: {resp.error}")
+    err = getattr(resp, "error", None)
+    if err:
+        raise RuntimeError(f"Get request admin falhou: {err}")
     data = resp.data or []
     return data[0] if data else None
+
 
 def get_vehicle_admin(request_id: str) -> Optional[Dict[str, Any]]:
     sb = get_admin_client()
     resp = sb.table("vehicles").select("*").eq("request_id", request_id).limit(1).execute()
-    if getattr(resp, "error", None):
-        raise RuntimeError(f"Get vehicle admin falhou: {resp.error}")
+    err = getattr(resp, "error", None)
+    if err:
+        raise RuntimeError(f"Get vehicle admin falhou: {err}")
     data = resp.data or []
     return data[0] if data else None
+
 
 def list_events_admin(request_id: str, limit: int = 200) -> List[Dict[str, Any]]:
     sb = get_admin_client()
@@ -88,15 +101,19 @@ def list_events_admin(request_id: str, limit: int = 200) -> List[Dict[str, Any]]
         .limit(limit)
         .execute()
     )
-    if getattr(resp, "error", None):
-        raise RuntimeError(f"List events admin falhou: {resp.error}")
+    err = getattr(resp, "error", None)
+    if err:
+        raise RuntimeError(f"List events admin falhou: {err}")
     return resp.data or []
+
 
 def update_request_admin(request_id: str, patch: Dict[str, Any]) -> None:
     sb = get_admin_client()
     resp = sb.table("requests").update(patch).eq("request_id", request_id).execute()
-    if getattr(resp, "error", None):
-        raise RuntimeError(f"Update requests {request_id} falhou: {resp.error}")
+    err = getattr(resp, "error", None)
+    if err:
+        raise RuntimeError(f"Update requests {request_id} falhou: {err}")
+
 
 def insert_event_admin(
     request_id: str,
@@ -108,5 +125,6 @@ def insert_event_admin(
     sb = get_admin_client()
     row = {"request_id": request_id, "level": level, "system": system, "message": message, "meta": meta or {}}
     resp = sb.table("events").insert(row).execute()
-    if getattr(resp, "error", None):
-        raise RuntimeError(f"Insert events falhou: {resp.error}")
+    err = getattr(resp, "error", None)
+    if err:
+        raise RuntimeError(f"Insert events falhou: {err}")
