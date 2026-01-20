@@ -11,12 +11,9 @@ import bases  # mantenha seu bases.py atual
 import db_supabase as db
 from net_guard import require_supabase_portal_ok
 
-
 st.set_page_config(page_title="Cadastro Courier - Portal", layout="wide")
 
-# valida conectividade/credenciais antes de renderizar o app
 require_supabase_portal_ok(db)
-
 
 UF_LIST = ["AC","AL","AP","AM","BA","CE","DF","ES","GO","MA","MT","MS","MG","PA","PB","PR","PE","PI","RJ","RN","RS","RO","RR","SC","SP","SE","TO"]
 GENDER_LIST = ["Masculino", "Feminino", "Outros"]
@@ -71,20 +68,13 @@ def explain_hierarchy() -> None:
 def clear_draft() -> None:
     keys = list(st.session_state.keys())
     for k in keys:
-        if k.startswith("draft_") or k.startswith("veh_") or k.startswith("ui_") or k in ("uf_end", "uf_cnh"):
+        if k.startswith("draft_") or k.startswith("veh_") or k.startswith("ui_"):
             del st.session_state[k]
 
 
 def portal_header() -> None:
     st.title("Cadastro Courier")
     st.caption("Brasil Risk / Rlog Cielo / Rlog Geral / Bringg")
-
-
-def _submit_via_rpc(req_row: Dict[str, Any], veh_row: Optional[Dict[str, Any]]) -> str:
-    """
-    Ponto único de submit do Portal.
-    """
-    return db.portal_submit_request(req_row, veh_row)
 
 
 def portal_acompanhar_view() -> None:
@@ -165,32 +155,27 @@ def portal_descredenciamento_form() -> None:
                 "request_type": "DESCREDENCIAMENTO",
                 "role": "Motorista/Ajudante",
                 "has_vehicle": False,
-
                 "nome": "—",
                 "nome_padrao": None,
                 "cpf": cpf,
-
                 "requester_name": requester_name.strip() or None,
                 "requester_org": requester_org.strip() or None,
-
                 "cnh_ack": True,
                 "cnh_received": False,
-
                 "status_overall": "Aguardando",
                 "status_brasil_risk": "Aguardando",
                 "status_rlog_cielo": "Aguardando",
                 "status_rlog_geral": "Aguardando",
                 "status_bringg": "Aguardando",
-
                 "payload_json": payload,
             }
 
-            _submit_via_rpc(request_row, None)
+            rid = db.portal_submit_request(request_row, None)
 
-            st.success(f"Solicitação registrada com sucesso. Request ID: {request_id}")
+            st.success(f"Solicitação registrada com sucesso. Request ID: {rid}")
             st.info("Use o Request ID + últimos 4 dígitos do CPF para acompanhar o status.")
         except Exception as e:
-            st.error("Falha ao registrar descredenciamento.")
+            st.error("Falha ao registrar solicitação.")
             with st.expander("Detalhes técnicos"):
                 st.code(str(e))
 
@@ -428,7 +413,7 @@ def cadastro_form_step1() -> None:
     with h2:
         cnh_no = st.text_input("CNH No. *", value=st.session_state.get("draft_cnh_no",""))
     with h3:
-        categoria = st.text_input("Categoria *", value=st.session_state.get("draft_categoria",""))
+        categoria_hab = st.text_input("Categoria *", value=st.session_state.get("draft_categoria",""))
 
     h4, h5 = st.columns(2)
     with h4:
@@ -527,7 +512,7 @@ def cadastro_form_step1() -> None:
 
                     "draft_registro": v.only_digits(reg) or reg.strip(),
                     "draft_cnh_no": v.only_digits(cnh_no) or cnh_no.strip(),
-                    "draft_categoria": categoria.strip(),
+                    "draft_categoria": categoria_hab.strip(),
                     "draft_validade": validade.strip(),
                     "draft_uf_cnh": uf_cnh,
                 })
@@ -702,7 +687,7 @@ def cadastro_form_step2_vehicle() -> None:
                     "proprietario_celular": v.only_digits(cel_prop),
                 }
 
-                vehicle_row = {
+                vehicle_row: Dict[str, Any] = {
                     "request_id": request_id,
                     "placa": placa.strip().upper(),
                     "tipo_veiculo": tipo,
@@ -728,12 +713,12 @@ def cadastro_form_step2_vehicle() -> None:
                     "payload_json": vehicle_payload,
                 }
 
-                _submit_via_rpc(request_row, vehicle_row)
+                rid = db.portal_submit_request(request_row, vehicle_row)
 
-                st.success(f"Solicitação registrada. Request ID: {request_id}")
+                st.success(f"Solicitação registrada. Request ID: {rid}")
                 st.info(
                     "Envie a CNH por canal corporativo e informe no assunto:\n"
-                    f"CNH - RequestID {request_id} - CPF {request_row['cpf']}"
+                    f"CNH - RequestID {rid} - CPF {request_row['cpf']}"
                 )
 
                 clear_draft()
@@ -773,19 +758,20 @@ def cadastro_review_no_vehicle() -> None:
             try:
                 if not cnh_ack:
                     raise ValueError("Confirme o envio da CNH ao gestor para continuar.")
+
                 request_id = new_request_id()
                 request_row = build_request_row_from_session(request_id=request_id, cnh_ack=cnh_ack)
+                rid = db.portal_submit_request(request_row, None)
 
-                _submit_via_rpc(request_row, None)
-
-                st.success(f"Solicitação registrada. Request ID: {request_id}")
+                st.success(f"Solicitação registrada. Request ID: {rid}")
                 st.info(
                     "Envie a CNH por canal corporativo e informe no assunto:\n"
-                    f"CNH - RequestID {request_id} - CPF {request_row['cpf']}"
+                    f"CNH - RequestID {rid} - CPF {request_row['cpf']}"
                 )
                 clear_draft()
                 st.session_state["portal_mode"] = "HOME"
                 st.rerun()
+
             except Exception as e:
                 st.error("Falha ao registrar solicitação.")
                 with st.expander("Detalhes técnicos"):

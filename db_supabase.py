@@ -5,63 +5,76 @@ from typing import Any, Dict, List, Optional
 from supabase_client import get_public_client, get_admin_client
 
 
-# --------------------------------------------------------------------------------------
-# Compatibilidade / inicialização (para projetos que chamam init_db)
-# --------------------------------------------------------------------------------------
-def init_db() -> None:
-    """
-    Mantido por compatibilidade com versões antigas do Portal/Admin.
-    Para Supabase, não há "init" real necessário.
-    """
-    return
+def _err_to_str(err: Any) -> str:
+    try:
+        return str(err)
+    except Exception:
+        return repr(err)
 
 
-def _err_text(err: Any) -> str:
-    if err is None:
-        return ""
-    if isinstance(err, dict):
-        return err.get("message") or str(err)
-    msg = getattr(err, "message", None)
-    return msg or str(err)
-
-
-def _raise_if_error(resp: Any, context: str) -> None:
+def _raise_if_error(resp: Any, ctx: str) -> None:
     err = getattr(resp, "error", None)
     if err:
-        raise RuntimeError(f"{context}: {_err_text(err)}")
+        raise RuntimeError(f"{ctx}: {_err_to_str(err)}")
 
 
-# --------------------------------------------------------------------------------------
-# PORTAL (ANON)  -> recomenda-se usar RPC portal_submit_request
-# --------------------------------------------------------------------------------------
-def portal_submit_request(req: Dict[str, Any], veh: Optional[Dict[str, Any]] = None) -> str:
+# ==================== PORTAL (ANON) ====================
+
+def portal_submit_request(req: Dict[str, Any], veh: Optional[Dict[str, Any]]) -> str:
     """
-    Envia uma solicitação de cadastro/descredenciamento via RPC (recomendado),
-    para evitar problemas de RLS e para inserir requests + vehicles de forma atômica.
+    Envia a solicitação via RPC (recomendado), para não depender de INSERT aberto no RLS.
+    Requer a function no Supabase:
+        public.portal_submit_request(req jsonb, veh jsonb) returns jsonb
     """
     sb = get_public_client()
     resp = sb.rpc("portal_submit_request", {"req": req, "veh": veh}).execute()
     _raise_if_error(resp, "RPC portal_submit_request falhou")
 
-    data = resp.data or {}
-    # Esperado: {"ok": true, "request_id": "XXXXYYYY"} (ou equivalente)
-    if isinstance(data, list) and data:
-        # algumas versões podem devolver lista
-        data = data[0]
+    data = resp.data
 
-    ok = bool(data.get("ok")) if isinstance(data, dict) else False
-    if not ok:
-        raise RuntimeError(f"Falha no submit (RPC): {data}")
+    # algumas libs retornam lista; normalizamos para dict
+    if isinstance(data, list):
+        data = data[0] if data else {}
 
-    rid = data.get("request_id") if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        raise RuntimeError(f"Resposta inesperada do RPC portal_submit_request: {data!r}")
+
+    if not data.get("ok"):
+        raise RuntimeError(f"RPC portal_submit_request retornou ok=false: {data!r}")
+
+    rid = data.get("request_id") or req.get("request_id")
     if not rid:
-        # fallback: se a RPC não retornar request_id, pega do req
-        rid = req.get("request_id")
-
-    if not rid:
-        raise RuntimeError(f"RPC retornou sucesso, mas sem request_id. Retorno: {data}")
+        raise RuntimeError(f"RPC portal_submit_request não retornou request_id: {data!r}")
 
     return str(rid)
+
+
+def create_request_public(row: Dict[str, Any]) -> None:
+    """
+    Mantido apenas para compatibilidade/testes.
+    Em produção, prefira portal_submit_request().
+    """
+    sb = get_public_client()
+    try:
+        resp = sb.table("requests").insert(row, returning="minimal").execute()
+    except TypeError:
+        resp = sb.table("requests").insert(row).execute()
+
+    _raise_if_error(resp, "Insert requests (public) falhou")
+
+
+def create_vehicle_public(row: Dict[str, Any]) -> None:
+    """
+    Mantido apenas para compatibilidade/testes.
+    Em produção, prefira portal_submit_request().
+    """
+    sb = get_public_client()
+    try:
+        resp = sb.table("vehicles").insert(row, returning="minimal").execute()
+    except TypeError:
+        resp = sb.table("vehicles").insert(row).execute()
+
+    _raise_if_error(resp, "Insert vehicles (public) falhou")
 
 
 def public_get_status(protocol: str, cpf_last4: str) -> List[Dict[str, Any]]:
@@ -71,29 +84,8 @@ def public_get_status(protocol: str, cpf_last4: str) -> List[Dict[str, Any]]:
     return resp.data or []
 
 
-# Mantidos por compatibilidade (se algum código antigo chamar direto insert).
-# Você pode remover depois que o Portal estiver 100% usando portal_submit_request().
-def create_request_public(row: Dict[str, Any]) -> None:
-    sb = get_public_client()
-    try:
-        resp = sb.table("requests").insert(row, returning="minimal").execute()
-    except TypeError:
-        resp = sb.table("requests").insert(row).execute()
-    _raise_if_error(resp, "Insert requests falhou")
+# ==================== ADMIN (SERVICE ROLE) ====================
 
-
-def create_vehicle_public(row: Dict[str, Any]) -> None:
-    sb = get_public_client()
-    try:
-        resp = sb.table("vehicles").insert(row, returning="minimal").execute()
-    except TypeError:
-        resp = sb.table("vehicles").insert(row).execute()
-    _raise_if_error(resp, "Insert vehicles falhou")
-
-
-# --------------------------------------------------------------------------------------
-# ADMIN (SERVICE ROLE)
-# --------------------------------------------------------------------------------------
 def list_requests_admin(limit: int = 300) -> List[Dict[str, Any]]:
     sb = get_admin_client()
     resp = sb.table("requests").select("*").order("created_at", desc=True).limit(limit).execute()
@@ -163,6 +155,12 @@ def insert_event_admin(
     meta: Optional[Dict[str, Any]] = None,
 ) -> None:
     sb = get_admin_client()
-    row = {"request_id": request_id, "level": level, "system": system, "message": message, "meta": meta or {}}
+    row = {
+        "request_id": request_id,
+        "level": level,
+        "system": system,
+        "message": message,
+        "meta": meta or {},
+    }
     resp = sb.table("events").insert(row).execute()
     _raise_if_error(resp, "Insert events falhou")
