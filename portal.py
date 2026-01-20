@@ -2,17 +2,17 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import streamlit as st
 
 import validators as v
-import bases  # mantenha seu bases.py atual
+import bases
 import db_supabase as db
 from net_guard import require_supabase_portal_ok
 
-st.set_page_config(page_title="Cadastro Courier - Portal", layout="wide")
 
+st.set_page_config(page_title="Cadastro Courier - Portal", layout="wide")
 require_supabase_portal_ok(db)
 
 UF_LIST = ["AC","AL","AP","AM","BA","CE","DF","ES","GO","MA","MT","MS","MG","PA","PB","PR","PE","PI","RJ","RN","RS","RO","RR","SC","SP","SE","TO"]
@@ -56,6 +56,10 @@ def status_badge(status: str) -> str:
     return status or "Aguardando"
 
 
+def is_motorista() -> bool:
+    return st.session_state.get("portal_role") == "MOTORISTA"
+
+
 def explain_hierarchy() -> None:
     st.info(
         "Hierarquia do fluxo:\n"
@@ -68,7 +72,7 @@ def explain_hierarchy() -> None:
 def clear_draft() -> None:
     keys = list(st.session_state.keys())
     for k in keys:
-        if k.startswith("draft_") or k.startswith("veh_") or k.startswith("ui_"):
+        if k.startswith(("draft_", "veh_", "ui_")):
             del st.session_state[k]
 
 
@@ -155,27 +159,22 @@ def portal_descredenciamento_form() -> None:
                 "request_type": "DESCREDENCIAMENTO",
                 "role": "Motorista/Ajudante",
                 "has_vehicle": False,
-
                 "nome": "—",
                 "nome_padrao": None,
                 "cpf": cpf,
-
                 "requester_name": requester_name.strip() or None,
                 "requester_org": requester_org.strip() or None,
-
                 "cnh_ack": False,
                 "cnh_received": False,
-
                 "status_overall": "Aguardando",
                 "status_brasil_risk": "Aguardando",
                 "status_rlog_cielo": "Aguardando",
                 "status_rlog_geral": "Aguardando",
                 "status_bringg": "Aguardando",
-
                 "payload_json": payload,
             }
 
-            db.create_request_public(request_row)
+            db.portal_submit_request(request_row, None)
 
             st.success(f"Solicitação registrada com sucesso. Request ID: {request_id}")
             st.info("Use o Request ID + últimos 4 dígitos do CPF para acompanhar o status.")
@@ -210,17 +209,17 @@ def portal_home_select_role() -> None:
 
 
 def build_payload_from_session(request_id: str) -> Dict[str, Any]:
-    is_ajudante = (st.session_state.get("portal_role") == "AJUDANTE") or (not bool(st.session_state.get("portal_has_vehicle")))
-
-    habilitacao = None
-    if not is_ajudante:
-        habilitacao = {
+    hab: Optional[Dict[str, Any]]
+    if is_motorista():
+        hab = {
             "numero_registro": st.session_state.get("draft_registro"),
             "cnh_no": st.session_state.get("draft_cnh_no"),
             "categoria": st.session_state.get("draft_categoria"),
             "validade": st.session_state.get("draft_validade"),
             "uf_cnh": st.session_state.get("draft_uf_cnh"),
         }
+    else:
+        hab = None  # ajudante não preenche habilitação
 
     return {
         "request_id": request_id,
@@ -261,7 +260,7 @@ def build_payload_from_session(request_id: str) -> Dict[str, Any]:
             "telefone_comercial": st.session_state.get("draft_tel_com"),
             "email": st.session_state.get("draft_email"),
         },
-        "habilitacao": habilitacao,  # AJUDANTE -> null
+        "habilitacao": hab,
         "centro_custos": {
             "empresa_centro_custo": "FEDEX",
             "responsavel_faturamento": "FEDEX BRASIL",
@@ -270,14 +269,13 @@ def build_payload_from_session(request_id: str) -> Dict[str, Any]:
 
 
 def build_request_row_from_session(request_id: str, cnh_ack: bool) -> Dict[str, Any]:
-    is_ajudante = (st.session_state.get("portal_role") == "AJUDANTE") or (not bool(st.session_state.get("portal_has_vehicle")))
     payload = build_payload_from_session(request_id=request_id)
 
     return {
         "request_id": request_id,
         "created_at": utc_now_iso(),
         "request_type": "CADASTRO",
-        "role": "Motorista" if st.session_state.get("portal_role") == "MOTORISTA" else "Ajudante",
+        "role": "Motorista" if is_motorista() else "Ajudante",
         "has_vehicle": bool(st.session_state.get("portal_has_vehicle")),
 
         "nome": st.session_state.get("draft_nome"),
@@ -294,7 +292,7 @@ def build_request_row_from_session(request_id: str, cnh_ack: bool) -> Dict[str, 
         "requester_name": None,
         "requester_org": None,
 
-        "cnh_ack": (False if is_ajudante else bool(cnh_ack)),
+        "cnh_ack": bool(cnh_ack) if is_motorista() else False,
         "cnh_received": False,
 
         "status_overall": "Aguardando",
@@ -311,8 +309,6 @@ def cadastro_form_step1() -> None:
     st.subheader("Solicitação de Cadastro Courier - Etapa 1 (Dados do Courier)")
     st.markdown("### Base a qual o courier será associado:")
 
-    is_ajudante = (st.session_state.get("portal_role") == "AJUDANTE") or (not bool(st.session_state.get("portal_has_vehicle")))
-
     if "ui_estado" not in st.session_state:
         st.session_state["ui_estado"] = st.session_state.get("draft_estado", "")
     if "ui_base_nome" not in st.session_state:
@@ -321,35 +317,21 @@ def cadastro_form_step1() -> None:
         st.session_state["ui_modalidade"] = st.session_state.get("draft_modalidade", MODALIDADES[0])
 
     b1, b2, b3, b4 = st.columns([3, 1, 2, 2])
-
     with b1:
         estados = [""] + list(bases.BASES_POR_ESTADO.keys())
         estado = st.selectbox("Estado *", estados, key="ui_estado")
-
     with b2:
         uf_base = bases.ESTADO_PARA_UF.get(estado, "")
         st.text_input("UF (auto)", value=uf_base, disabled=True)
-
     with b3:
-        sigla_cielo = st.text_input(
-            "Sigla da Base (Cielo) *",
-            value=st.session_state.get("draft_sigla_cielo", ""),
-            placeholder="Ex.: CJR"
-        )
-
+        sigla_cielo = st.text_input("Sigla da Base (Cielo) *", value=st.session_state.get("draft_sigla_cielo", ""), placeholder="Ex.: CJR")
     with b4:
-        sigla_geral = st.text_input(
-            "Sigla da Base (Geral) *",
-            value=st.session_state.get("draft_sigla_geral", ""),
-            placeholder="Ex.: CJR"
-        )
+        sigla_geral = st.text_input("Sigla da Base (Geral) *", value=st.session_state.get("draft_sigla_geral", ""), placeholder="Ex.: CJR")
 
     b5, b6 = st.columns([4, 3])
-
     with b5:
         bases_list = bases.BASES_POR_ESTADO.get(estado, [])
         base_nome = st.selectbox("Nome da Base *", [""] + bases_list, key="ui_base_nome")
-
     with b6:
         modalidade = st.selectbox("Modalidade do Courier?", MODALIDADES, key="ui_modalidade")
 
@@ -379,7 +361,7 @@ def cadastro_form_step1() -> None:
 
     p9, p10, p11 = st.columns(3)
     with p9:
-        funcao = st.selectbox("Função *", FUNCAO_LIST, index=0 if st.session_state.get("portal_role")=="MOTORISTA" else 1)
+        funcao = st.selectbox("Função *", FUNCAO_LIST, index=0 if is_motorista() else 1)
     with p10:
         st.text_input("Perfil *", value=PERFIL_FIXO, disabled=True)
     with p11:
@@ -417,23 +399,17 @@ def cadastro_form_step1() -> None:
 
     email = st.text_input("E-mail", value=st.session_state.get("draft_email",""))
 
-    # -------------------- HABILITAÇÃO (SÓ PARA MOTORISTA) --------------------
-    reg = ""
-    cnh_no = ""
-    cat_cnh = ""
-    validade = ""
-    uf_cnh = ""
-
-    if not is_ajudante:
+    # ---------- HABILITAÇÃO: SOMENTE MOTORISTA ----------
+    if is_motorista():
         st.divider()
-        st.markdown("### Dados da Habilitação")
+        st.markdown("### Dados da Habilitação (Motorista)")
         h1, h2, h3 = st.columns(3)
         with h1:
             reg = st.text_input("Número do Registro *", value=st.session_state.get("draft_registro",""))
         with h2:
             cnh_no = st.text_input("CNH No. *", value=st.session_state.get("draft_cnh_no",""))
         with h3:
-            cat_cnh = st.text_input("Categoria *", value=st.session_state.get("draft_categoria",""))
+            categoria_h = st.text_input("Categoria *", value=st.session_state.get("draft_categoria",""))
 
         h4, h5 = st.columns(2)
         with h4:
@@ -442,10 +418,13 @@ def cadastro_form_step1() -> None:
             uf_cnh = st.selectbox("UF *", [""] + UF_LIST, key="uf_cnh")
     else:
         st.divider()
-        st.markdown("### Dados da Habilitação")
-        st.info("Para **Ajudante (Courier sem veículo)** não é necessário informar dados de habilitação.")
+        st.info("Courier sem veículo (Ajudante): dados da habilitação não são necessários.")
+        reg = ""
+        cnh_no = ""
+        categoria_h = ""
+        validade = ""
+        uf_cnh = ""
 
-    # -------------------- CENTRO DE CUSTOS --------------------
     st.divider()
     st.markdown("### Centro de Custos")
     cc1, cc2 = st.columns(2)
@@ -463,10 +442,10 @@ def cadastro_form_step1() -> None:
     with colB:
         if st.button("Continuar", type="primary", use_container_width=True):
             try:
-                estado = st.session_state.get("ui_estado", "")
-                base_nome = st.session_state.get("ui_base_nome", "")
-                modalidade = st.session_state.get("ui_modalidade", "")
-                uf_base = bases.ESTADO_PARA_UF.get(estado, "")
+                estado_v = st.session_state.get("ui_estado", "")
+                base_nome_v = st.session_state.get("ui_base_nome", "")
+                modalidade_v = st.session_state.get("ui_modalidade", "")
+                uf_base_v = bases.ESTADO_PARA_UF.get(estado_v, "")
 
                 nome_n = v.normalize_name(nome)
                 cpf = v.validate_exact_digits("CPF", cpf_in, 11)
@@ -474,6 +453,7 @@ def cadastro_form_step1() -> None:
                 rg_d = v.only_digits(rg)
                 if not rg_d:
                     raise ValueError("RG é obrigatório.")
+
                 celular_d = v.validate_phone("Celular", celular)
                 if telefone.strip():
                     v.validate_phone("Telefone", telefone)
@@ -488,11 +468,11 @@ def cadastro_form_step1() -> None:
                 if not nome_mae.strip():
                     raise ValueError("Nome da Mãe é obrigatório.")
 
-                if not estado:
+                if not estado_v:
                     raise ValueError("Estado é obrigatório.")
-                if not base_nome:
+                if not base_nome_v:
                     raise ValueError("Nome da Base é obrigatório.")
-                if not uf_base:
+                if not uf_base_v:
                     raise ValueError("UF da Base não pôde ser inferida. Verifique o mapeamento.")
                 if not sigla_cielo.strip() or not sigla_geral.strip():
                     raise ValueError("Siglas da Base (Cielo e Geral) são obrigatórias.")
@@ -501,25 +481,25 @@ def cadastro_form_step1() -> None:
                 if not endereco.strip() or not bairro.strip() or not cidade.strip() or not numero.strip():
                     raise ValueError("Endereço, Bairro, Cidade e Número são obrigatórios.")
 
-                # Valida habilitação só se for motorista
-                if not is_ajudante:
+                # valida habilitação somente motorista
+                if is_motorista():
                     if not (v.only_digits(reg) or reg.strip()):
                         raise ValueError("Número do Registro é obrigatório.")
                     if not (v.only_digits(cnh_no) or cnh_no.strip()):
                         raise ValueError("CNH No. é obrigatório.")
-                    if not cat_cnh.strip():
-                        raise ValueError("Categoria da CNH é obrigatória.")
+                    if not categoria_h.strip():
+                        raise ValueError("Categoria é obrigatória.")
+                    v.validate_date_ddmmyyyy("Validade", validade)
                     if not uf_cnh:
                         raise ValueError("UF da CNH é obrigatório.")
-                    v.validate_date_ddmmyyyy("Validade", validade)
 
                 st.session_state.update({
-                    "draft_base_nome": base_nome.strip(),
-                    "draft_estado": estado,
-                    "draft_base_uf": uf_base,
+                    "draft_base_nome": base_nome_v.strip(),
+                    "draft_estado": estado_v,
+                    "draft_base_uf": uf_base_v,
                     "draft_sigla_cielo": sigla_cielo.strip().upper(),
                     "draft_sigla_geral": sigla_geral.strip().upper(),
-                    "draft_modalidade": modalidade,
+                    "draft_modalidade": modalidade_v,
 
                     "draft_nome": nome_n,
                     "draft_genero": genero,
@@ -545,12 +525,11 @@ def cadastro_form_step1() -> None:
                     "draft_email": email.strip(),
                 })
 
-                # Habilitação: salva normal para motorista, salva None para ajudante
-                if not is_ajudante:
+                if is_motorista():
                     st.session_state.update({
                         "draft_registro": v.only_digits(reg) or reg.strip(),
                         "draft_cnh_no": v.only_digits(cnh_no) or cnh_no.strip(),
-                        "draft_categoria": cat_cnh.strip(),
+                        "draft_categoria": categoria_h.strip(),
                         "draft_validade": validade.strip(),
                         "draft_uf_cnh": uf_cnh,
                     })
@@ -563,7 +542,7 @@ def cadastro_form_step1() -> None:
                         "draft_uf_cnh": None,
                     })
 
-                nome_padrao = v.make_nome_padrao(sigla_cielo.strip(), nome_n, modalidade)
+                nome_padrao = v.make_nome_padrao(sigla_cielo.strip(), nome_n, modalidade_v)
                 st.session_state["draft_nome_padrao"] = nome_padrao
 
                 if st.session_state.get("portal_has_vehicle"):
@@ -622,8 +601,8 @@ def cadastro_form_step2_vehicle() -> None:
 
     st.divider()
     st.markdown("### Proprietário do Veículo")
-
     pt = st.radio("Tipo de Proprietário *", PROPRIETARIO_TIPO, horizontal=True)
+
     p1, p2, p3 = st.columns(3)
     with p1:
         doc = st.text_input("CPF *" if pt == "Física" else "CNPJ *", value=st.session_state.get("veh_prop_doc",""))
@@ -706,9 +685,7 @@ def cadastro_form_step2_vehicle() -> None:
                         raise ValueError("Razão Social é obrigatória.")
 
                 request_id = new_request_id()
-
-                request_row = build_request_row_from_session(request_id=request_id, cnh_ack=cnh_ack)
-                db.create_request_public(request_row)
+                request_row = build_request_row_from_session(request_id=request_id, cnh_ack=True)
 
                 vehicle_payload = {
                     "placa": placa.strip().upper(),
@@ -760,7 +737,7 @@ def cadastro_form_step2_vehicle() -> None:
                     "payload_json": vehicle_payload,
                 }
 
-                db.create_vehicle_public(vehicle_row)
+                db.portal_submit_request(request_row, vehicle_row)
 
                 st.success(f"Solicitação registrada. Request ID: {request_id}")
                 st.info(
@@ -778,6 +755,7 @@ def cadastro_form_step2_vehicle() -> None:
 
 def cadastro_review_no_vehicle() -> None:
     st.subheader("Revisão final (sem veículo)")
+    st.write("Confira os dados e solicite o cadastro.")
 
     st.write({
         "Nome": st.session_state.get("draft_nome"),
@@ -786,9 +764,8 @@ def cadastro_review_no_vehicle() -> None:
         "Base": st.session_state.get("draft_base_nome"),
         "UF Base": st.session_state.get("draft_base_uf"),
         "Modalidade": st.session_state.get("draft_modalidade"),
+        "Função": "Ajudante",
     })
-
-    st.caption("Courier sem veículo (Ajudante): não é necessário informar habilitação/CNH.")
 
     colA, colB = st.columns([1, 1])
     with colA:
@@ -801,11 +778,11 @@ def cadastro_review_no_vehicle() -> None:
             try:
                 request_id = new_request_id()
                 request_row = build_request_row_from_session(request_id=request_id, cnh_ack=False)
-                db.create_request_public(request_row)
+
+                db.portal_submit_request(request_row, None)
 
                 st.success(f"Solicitação registrada. Request ID: {request_id}")
                 st.info("Use o Request ID + últimos 4 dígitos do CPF para acompanhar o status.")
-
                 clear_draft()
                 st.session_state["portal_mode"] = "HOME"
                 st.rerun()
@@ -819,15 +796,12 @@ def portal_flow() -> None:
     if mode == "HOME":
         portal_home_select_role()
         return
-
     if mode == "CADASTRO_STEP1":
         cadastro_form_step1()
         return
-
     if mode == "CADASTRO_STEP2":
         cadastro_form_step2_vehicle()
         return
-
     if mode == "CADASTRO_REVIEW_NO_VEHICLE":
         cadastro_review_no_vehicle()
         return
