@@ -6,7 +6,6 @@ import streamlit as st
 from auth_admin import require_admin
 import db_supabase as db
 import services
-
 from net_guard import require_supabase_admin_ok
 
 st.set_page_config(page_title="Cadastro Courier - Admin", layout="wide")
@@ -29,6 +28,32 @@ def run_safe(fn, request_id: str, label: str) -> None:
             st.code(str(e))
 
 
+def infer_is_ajudante(r: dict, payload: dict | None) -> bool:
+    """
+    Regras práticas:
+    - Se has_vehicle for False -> ajudante (sem veículo)
+    - Se role vier como "Ajudante" -> ajudante
+    - Se payload.role vier como "AJUDANTE" -> ajudante
+    """
+    role = (r.get("role") or "").strip().lower()
+    payload_role = ((payload or {}).get("role") or "").strip().upper()
+    has_vehicle = bool(r.get("has_vehicle"))
+    return (not has_vehicle) or ("ajudante" in role) or (payload_role == "AJUDANTE")
+
+
+def format_habilitacao(payload: dict | None, is_ajudante: bool) -> str:
+    if is_ajudante:
+        return "N/A (Ajudante)"
+    habil = (payload or {}).get("habilitacao")
+    if not isinstance(habil, dict) or not habil:
+        return "—"
+    cat = habil.get("categoria") or "—"
+    uf = habil.get("uf_cnh") or "—"
+    val = habil.get("validade") or "—"
+    cnh = habil.get("cnh_no") or "—"
+    return f"CNH {cnh} | Cat {cat} | UF {uf} | Val {val}"
+
+
 def admin_queue_view() -> None:
     st.title("Área Administrativa")
     st.caption("Fila, monitoramento e execução por etapa.")
@@ -40,24 +65,25 @@ def admin_queue_view() -> None:
         st.warning("Nenhuma solicitação encontrada.")
         return
 
+    # Mantém suas colunas atuais
     df = pd.DataFrame(rows)[[
-        "request_type","cpf","nome","nome_padrao","role",
-        "status_brasil_risk","status_rlog_cielo","status_rlog_geral","status_bringg",
-        "created_at","status_overall","request_id","cnh_received"
+        "request_type", "cpf", "nome", "nome_padrao", "role",
+        "status_brasil_risk", "status_rlog_cielo", "status_rlog_geral", "status_bringg",
+        "created_at", "status_overall", "request_id", "cnh_received"
     ]].rename(columns={
-        "request_type":"Tipo",
-        "cpf":"CPF",
-        "nome":"Nome",
-        "nome_padrao":"Nome Padrão",
-        "role":"Função",
-        "status_brasil_risk":"Brasil Risk",
-        "status_rlog_cielo":"Rlog Cielo",
-        "status_rlog_geral":"Rlog Geral",
-        "status_bringg":"Bringg",
-        "created_at":"Data (UTC)",
-        "status_overall":"Status Final",
-        "request_id":"Request ID",
-        "cnh_received":"CNH recebida?",
+        "request_type": "Tipo",
+        "cpf": "CPF",
+        "nome": "Nome",
+        "nome_padrao": "Nome Padrão",
+        "role": "Função",
+        "status_brasil_risk": "Brasil Risk",
+        "status_rlog_cielo": "Rlog Cielo",
+        "status_rlog_geral": "Rlog Geral",
+        "status_bringg": "Bringg",
+        "created_at": "Data (UTC)",
+        "status_overall": "Status Final",
+        "request_id": "Request ID",
+        "cnh_received": "CNH recebida?",
     })
 
     df.insert(0, "Selecionar", False)
@@ -115,6 +141,9 @@ def admin_queue_view() -> None:
     payload = r.get("payload_json") or {}
     vehicle_payload = (vehicle or {}).get("payload_json") if vehicle else None
 
+    is_ajudante = infer_is_ajudante(r, payload)
+    habil_text = format_habilitacao(payload, is_ajudante)
+
     left, right = st.columns([1, 1])
 
     with left:
@@ -130,19 +159,24 @@ def admin_queue_view() -> None:
             "Base": r.get("base_nome"),
             "UF Base": r.get("base_uf"),
             "Modalidade": r.get("modalidade"),
+            "Habilitação": habil_text,
         })
 
-        cnh = st.checkbox("CNH recebida (marcar manualmente)", value=bool(r.get("cnh_received")))
-        if st.button("Salvar CNH recebida"):
-            try:
-                db.update_request_admin(chosen, {"cnh_received": bool(cnh)})
-                db.insert_event_admin(chosen, "INFO", "ADMIN", f"CNH recebida marcada como: {cnh}")
-                st.success("Atualizado.")
-                st.rerun()
-            except Exception as e:
-                st.error("Falha ao salvar CNH recebida.")
-                with st.expander("Detalhes técnicos"):
-                    st.code(str(e))
+        # CNH recebida só faz sentido para motorista
+        if is_ajudante:
+            st.info("Ajudante (sem veículo): não há habilitação/CNH para receber ou marcar.")
+        else:
+            cnh = st.checkbox("CNH recebida (marcar manualmente)", value=bool(r.get("cnh_received")))
+            if st.button("Salvar CNH recebida"):
+                try:
+                    db.update_request_admin(chosen, {"cnh_received": bool(cnh)})
+                    db.insert_event_admin(chosen, "INFO", "ADMIN", f"CNH recebida marcada como: {cnh}")
+                    st.success("Atualizado.")
+                    st.rerun()
+                except Exception as e:
+                    st.error("Falha ao salvar CNH recebida.")
+                    with st.expander("Detalhes técnicos"):
+                        st.code(str(e))
 
         st.subheader("Detalhes do Formulário (payload_json)")
         st.json(payload)
@@ -183,7 +217,7 @@ def admin_queue_view() -> None:
         st.subheader("Eventos (últimos 200)")
         events = db.list_events_admin(chosen, limit=200)
         if events:
-            ev_df = pd.DataFrame(events)[["created_at","level","system","message","meta"]]
+            ev_df = pd.DataFrame(events)[["created_at", "level", "system", "message", "meta"]]
             st.dataframe(ev_df, use_container_width=True, hide_index=True)
         else:
             st.caption("Sem eventos ainda.")

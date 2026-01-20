@@ -2,6 +2,9 @@
 __pycache__/
 *.py[cod]
 *.log
+*.run_admin.cmd
+*.run_portal.cmd
+
 
 # Virtual env
 venv/
