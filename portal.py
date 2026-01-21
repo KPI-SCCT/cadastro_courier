@@ -105,7 +105,8 @@ def portal_acompanhar_view() -> None:
 
             r = rows[0]
             st.success("Solicitação encontrada.")
-            st.write(f"**Nome:** {r.get('nome')}")
+            st.write(f"**Tipo:** {r.get('request_type') or '—'}")
+            st.write(f"**Nome:** {r.get('nome') or '—'}")
             st.write(f"**Nome Padrão:** {r.get('nome_padrao') or '—'}")
             st.caption(f"Data (UTC): {r.get('created_at')}")
 
