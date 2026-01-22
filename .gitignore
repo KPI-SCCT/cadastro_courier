@@ -40,7 +40,6 @@ admin.py
 auth_admin.py
 services.py
 brasilrisk_automation.py
-net_guard.py
 app_streamlit_old.txt
 
 # Artefatos / bancos locais 
