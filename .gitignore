@@ -2,8 +2,9 @@
 __pycache__/
 *.py[cod]
 *.log
-*.run_admin.cmd
-*.run_portal.cmd
+*.cmd
+run_admin.cmd
+run_portal.cmd
 *.state.json
 okta_state*.json
 
@@ -21,6 +22,7 @@ venv/
 
 # Streamlit (não commitar secrets)
 .streamlit/secrets.toml
+.streamlit/config.toml
 
 # IDE/OS
 .vscode/
