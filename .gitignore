@@ -4,11 +4,16 @@ __pycache__/
 *.log
 *.run_admin.cmd
 *.run_portal.cmd
+*.state.json
+okta_state*.json
 
 
 # Virtual env
 venv/
 .venv/
+.env/
+.env.*
+!.env.example
 
 # Env local
 .env
@@ -28,4 +33,21 @@ Docs/
 certs/
 tools/
 .devcontainer/
+devcontainer.json
 app_streamlit_old.txt
+automations/
+admin.py
+auth_admin.py
+services.py
+brasilrisk_automation.py
+net_guard.py
+app_streamlit_old.txt
+
+# Artefatos / bancos locais 
+*.db
+*.sqlite
+*.sqlite3
+
+# Estados/credenciais (ex.: Playwright/Okta)
+okta_state.json
+*.state.json
