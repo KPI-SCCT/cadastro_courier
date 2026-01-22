@@ -240,6 +240,7 @@ def build_payload_from_session(request_id: str) -> Dict[str, Any]:
             "data_nascimento": st.session_state.get("draft_nascimento"),
             "cpf": st.session_state.get("draft_cpf"),
             "rg": st.session_state.get("draft_rg"),
+            "orgao_exp": st.session_state.get("draft_orgao_exp"),
             "data_emissao": st.session_state.get("draft_data_emissao"),
             "nome_pai": st.session_state.get("draft_nome_pai") or "Não Informado",
             "nome_mae": st.session_state.get("draft_nome_mae"),
@@ -346,12 +347,14 @@ def cadastro_form_step1() -> None:
     with p3:
         nascimento = st.text_input("Data Nascimento * (dd/mm/aaaa)", value=st.session_state.get("draft_nascimento",""))
 
-    p4, p5, p6 = st.columns(3)
+    p4, p5, p6, p7a = st.columns(4)
     with p4:
         cpf_in = st.text_input("CPF *", value=st.session_state.get("draft_cpf",""), placeholder="###.###.###-##")
     with p5:
         rg = st.text_input("RG *", value=st.session_state.get("draft_rg",""))
     with p6:
+        orgao_exp = st.text_input("Órgão Exp. *", value=st.session_state.get("draft_orgao_exp",""), placeholder="Ex.: SSP/SP")
+    with p7a:
         data_emissao = st.text_input("Data Emissão * (dd/mm/aaaa)", value=st.session_state.get("draft_data_emissao",""))
 
     p7, p8 = st.columns(2)
@@ -454,6 +457,8 @@ def cadastro_form_step1() -> None:
                 rg_d = v.only_digits(rg)
                 if not rg_d:
                     raise ValueError("RG é obrigatório.")
+                if not orgao_exp.strip():
+                    raise ValueError("Órgão Exp. é obrigatório.")
 
                 celular_d = v.validate_phone("Celular", celular)
                 if telefone.strip():
@@ -508,6 +513,7 @@ def cadastro_form_step1() -> None:
                     "draft_cpf": cpf,
                     "draft_rg": rg_d,
                     "draft_data_emissao": data_emissao.strip(),
+                    "draft_orgao_exp": orgao_exp.strip().upper(),
                     "draft_nome_pai": v.normalize_name(nome_pai) if nome_pai.strip() else "Não Informado",
                     "draft_nome_mae": v.normalize_name(nome_mae),
                     "draft_funcao": funcao,
@@ -600,6 +606,12 @@ def cadastro_form_step2_vehicle() -> None:
         rntrc = ""
         validade_rntrc = ""
 
+    data_lic = st.text_input(
+        "Data Licenciamento * (dd/mm/aaaa)",
+        value=st.session_state.get("veh_data_lic",""),
+        key="veh_data_lic",
+    )
+
     st.divider()
     st.markdown("### Proprietário do Veículo")
     pt = st.radio("Tipo de Proprietário *", PROPRIETARIO_TIPO, horizontal=True)
@@ -659,6 +671,9 @@ def cadastro_form_step2_vehicle() -> None:
                 if not cidade_veic.strip():
                     raise ValueError("Cidade do Veículo é obrigatória.")
 
+                # Data Licenciamento é SEMPRE obrigatória
+                v.validate_date_ddmmyyyy("Data Licenciamento", data_lic)
+
                 if categoria == "Aluguel":
                     if not rntrc.strip():
                         raise ValueError("RNTRC é obrigatório para veículo Aluguel.")
@@ -686,7 +701,7 @@ def cadastro_form_step2_vehicle() -> None:
                         raise ValueError("Razão Social é obrigatória.")
 
                 request_id = new_request_id()
-                request_row = build_request_row_from_session(request_id=request_id, cnh_ack=True)
+                request_row = build_request_row_from_session(request_id=request_id, cnh_ack=cnh_ack)
 
                 vehicle_payload = {
                     "placa": placa.strip().upper(),
@@ -710,6 +725,7 @@ def cadastro_form_step2_vehicle() -> None:
                     "proprietario_nascimento": nasc_prop.strip() if pt == "Física" else "",
                     "proprietario_mae": v.normalize_name(mae_prop) if pt == "Física" else "",
                     "proprietario_celular": v.only_digits(cel_prop),
+                    "data_licenciamento": data_lic.strip(),
                 }
 
                 vehicle_row = {
