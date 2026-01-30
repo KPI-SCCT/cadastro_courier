@@ -35,6 +35,7 @@ Docs/
 certs/
 tools/
 .devcontainer/
+chrome_profile/
 devcontainer.json
 app_streamlit_old.txt
 automations/
